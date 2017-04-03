@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <link rel="stylesheet" href="css/main.css">
+    <title>Расписание лекций</title>
+</head>
+<body>
+    <div class="container">
+        <h1>Расписание лекций</h1>
+        <div class="filter_wrap">
+            <h2>Фильтр по полям:</h2>
+            <form action="" id="filter" method="get" class="filter__form">
+                <div class="filter__input">
+                    <input type="text" name="filter-school" class="input" placeholder="Поиск по школам">
+                </div>
+                <div class="filter__input">
+                    <input type="text" name="filter-lector" class="input" placeholder="Поиск по лектору">
+                </div>
+                <div class="filter__input">
+                    <input type="text" name="filter-date" class="input" placeholder="Поиск по дате">
+                </div>
+                <button type="submit" class="btn">Отфильтровать</button>
+            </form>
+        </div>
+        <div class="table_wrap">
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>№</th>
+                        <th>Школа</th>
+                        <th>Тема лекции</th>
+                        <th>Имя лектора</th>
+                        <th>Дата</th>
+                        <th>Место проведения</th>
+                        <th>Материалы</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr class="lecture__ended">
+                        <td data-label = "№"><span>1</span></td>
+                        <td data-label = "Школа"><span>Разработка интерфейсов</span></td>
+                        <td data-label = "Тема лекции"><span>Адаптивная вёрстка</span></td>
+                        <td data-label = "Имя лектора">
+                            <span><a href="https://avatars.mds.yandex.net/get-yaevents/95043/0914ac42b6dc11e687ef002590c62a5c/big" target="_blank">Дмитрий Душкин</a></span>
+                        </td>
+                        <td data-label = "Дата"><span>01.07.2017</span></td>
+                        <td data-label = "Место проведения"><span>Аудитория 1</span></td>
+                        <td data-label = "Материалы"><span><a href="https://events.yandex.ru/lib/talks/4162/" target="_blank">Смотреть</a></span></td>
+                    </tr>
+                    <tr>
+                        <td data-label = "№"><span>2</span></td>
+                        <td data-label = "Школа"><span>Разработка интерфейсов</span></td>
+                        <td data-label = "Тема лекции"><span>Работа с сенсорным пользовательским вводом</span></td>
+                        <td data-label = "Имя лектора"><span><a href="https://avatars.mds.yandex.net/get-yaevents/95043/0914ac42b6dc11e687ef002590c62a5c/big" target="_blank">Дмитрий Душкин</a></span></td>
+                        <td data-label = "Дата"><span>02.07.2017</span></td>
+                        <td data-label = "Место проведения"><span>Аудитория 1</span></td>
+                        <td data-label = "Материалы"><span></span></td>
+                    </tr>
+                    <tr>
+                        <td data-label = "№"><span>3</span></td>
+                        <td data-label = "Школа"><span>Разработка интерфейсов</span></td>
+                        <td data-label = "Тема лекции"><span>Мультимедиа: возможности браузера</span></td>
+                        <td data-label = "Имя лектора"><span><a href="https://avatars.mds.yandex.net/get-yaevents/194464/21e1dae2b6dc11e687ef002590c62a5c/big" target="_blank">Максим Васильев</a></span></td>
+                        <td data-label = "Дата"><span>03.07.2017</span></td>
+                        <td data-label = "Место проведения"><span>Аудитория 2</span></td>
+                        <td data-label = "Материалы"><span> </span></td>
+                    </tr>
+                    <tr class="lecture__ended">
+                        <td data-label = "№"><span>4</span></td>
+                        <td data-label = "Школа"><span>Мобильная разработка</span></td>
+                        <td data-label = "Тема лекции"><span>Java Blitz (Часть 1)</span></td>
+                        <td data-label = "Имя лектора"><span><a href="https://avatars.mds.yandex.net/get-yaevents/198307/9d9a8672b6da11e687ef002590c62a5c/big" target="_blank">Эдуард Мацуков</a></span></td>
+                        <td data-label = "Дата"><span>01.07.2017</span></td>
+                        <td data-label = "Место проведения"><span>Аудитория 4</span></td>
+                        <td data-label = "Материалы"><span><a href="https://events.yandex.ru/lib/talks/4162/" target="_blank">Смотреть</a></span></td>
+                    </tr>
+                    <tr>
+                        <td data-label = "№"><span>5</span></td>
+                        <td data-label = "Школа"><span>Мобильная разработка</span></td>
+                        <td data-label = "Тема лекции"><span>Git & Workflow</span></td>
+                        <td data-label = "Имя лектора"><span><a href="https://avatars.mds.yandex.net/get-yaevents/197753/08c605ecb6dc11e687ef002590c62a5c/big" target="_blank">Дмитрий Складнов</a></span></td>
+                        <td data-label = "Дата"><span>02.07.2017</span></td>
+                        <td data-label = "Место проведения"><span>Аудитория 4</span></td>
+                        <td data-label = "Материалы"><span></span></td>
+                    </tr>
+                    <tr>
+                        <td data-label = "№"><span>6</span></td>
+                        <td data-label = "Школа"><span>Мобильная разработка</span></td>
+                        <td data-label = "Тема лекции"><span>Java Blitz (Часть 2)</span></td>
+                        <td data-label = "Имя лектора"><span><a href="https://avatars.mds.yandex.net/get-yaevents/198307/9d9a8672b6da11e687ef002590c62a5c/big" target="_blank">Эдуард Мацуков</a></span></td>
+                        <td data-label = "Дата"><span>03.07.2017</span></td>
+                        <td data-label = "Место проведения"><span>Аудитория 4</span></td>
+                        <td data-label = "Материалы"><span></span></td>
+                    </tr>
+                    <tr class="lecture__ended">
+                        <td data-label = "№"><span>7</span></td>
+                        <td data-label = "Школа"><span>Мобильный дизайн</span></td>
+                        <td data-label = "Тема лекции"><span>Идея, исследование, концепт (Часть 1)</span></td>
+                        <td data-label = "Имя лектора"><span><a href="https://avatars.mds.yandex.net/get-yaevents/204268/07bb5f8ab6dc11e687ef002590c62a5c/big" target="_blank">Антон Тен</a></span></td>
+                        <td data-label = "Дата"><span>01.07.2017</span></td>
+                        <td data-label = "Место проведения"><span>Аудитория 7</span></td>
+                        <td data-label = "Материалы"><span><a href="https://events.yandex.ru/lib/talks/4162/" target="_blank">Смотреть</a></span></td>
+                    </tr>
+                    <tr>
+                        <td data-label = "№"><span>8</span></td>
+                        <td data-label = "Школа"><span>Мобильный дизайн</span></td>
+                        <td data-label = "Тема лекции"><span>Идея, исследование, концепт (Часть 2)</span></td>
+                        <td data-label = "Имя лектора"><span><a href="https://avatars.mds.yandex.net/get-yaevents/204268/07bb5f8ab6dc11e687ef002590c62a5c/big" target="_blank">Антон Тен</a></span></td>
+                        <td data-label = "Дата"><span>02.07.2017</span></td>
+                        <td data-label = "Место проведения"><span>Аудитория 7</span></td>
+                        <td data-label = "Материалы"><span></span></td>
+                    </tr>
+                    <tr>
+                        <td data-label = "№"><span>9</span></td>
+                        <td data-label = "Школа"><span>Мобильный дизайн</span></td>
+                        <td data-label = "Тема лекции"><span> Особенности проектирования мобильных интерфейсов</span></td>
+                        <td data-label = "Имя лектора"><span><a href="https://avatars.mds.yandex.net/get-yaevents/194464/1c55b8d2b6dc11e687ef002590c62a5c/big" target="_blank">Васюнин Николай</a></span></td>
+                        <td data-label = "Дата"><span>03.07.2017</span></td>
+                        <td data-label = "Место проведения"><span>Аудитория 8</span></td>
+                        <td data-label = "Материалы"><span></span></td>
+                    </tr>
+                    <tr>
+                        <td data-label = "№"><span>10</span></td>
+                        <td data-label = "Школа"><span>Разработка интерфейсов, мобильная разработка, мобильный дизайн</span></td>
+                        <td data-label = "Тема лекции"><span>Идея, исследование, концепт (Часть 2)</span></td>
+                        <td data-label = "Имя лектора"><span><a href="https://avatars.mds.yandex.net/get-yaevents/204268/07bb5f8ab6dc11e687ef002590c62a5c/big" target="_blank">Антон Тен</a></span></td>
+                        <td data-label = "Дата"><span>04.07.2017</span></td>
+                        <td data-label = "Место проведения"><span>Аудитория 7</span></td>
+                        <td data-label = "Материалы"><span></span></td>
+                    </tr>
+                    <tr>
+                        <td data-label = "№"><span>11</span></td>
+                        <td data-label = "Школа"><span>Разработка интерфейсов, мобильная разработка, мобильный дизайн</span></td>
+                        <td data-label = "Тема лекции"><span> Особенности проектирования мобильных интерфейсов</span></td>
+                        <td data-label = "Имя лектора"><span><a href="https://avatars.mds.yandex.net/get-yaevents/194464/1c55b8d2b6dc11e687ef002590c62a5c/big" target="_blank">Васюнин Николай</a></span></td>
+                        <td data-label = "Дата"><span>05.07.2017</span></td>
+                        <td data-label = "Место проведения"><span>Аудитория 10</span></td>
+                        <td data-label = "Материалы"><span></span></td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+<script src="js/index.js"></script>
+</body>
+</html>
