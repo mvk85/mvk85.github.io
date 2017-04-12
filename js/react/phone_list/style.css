@@ -1,0 +1,44 @@
+body {
+  background: #ece7e7;
+}
+
+.form__button {
+  margin: 15px 0;
+}
+
+.phones__article {
+  background-color: #fff;
+  font-size: 16px;
+  margin-bottom: 25px;
+  line-height: 180%;
+  display: block;
+  padding: 10px;
+  position: relative;
+}
+
+.phones__article-close {
+  position: absolute;
+  right: 0;
+  top: 0;
+  padding: 5px;
+  background-color: #ccc;
+  color: #fff;
+  display: inline-block;
+  cursor: pointer;
+  line-height: 15px;
+  font-size: 15px;
+}
+
+.phones__article-close:hover {
+  background-color: #000;
+}
+
+.phones_container {
+  margin: 45px 0;
+}
+
+.phones__article-field {
+  font-weight: bold;
+  padding-right: 10px;
+  display: inline-block;
+}
