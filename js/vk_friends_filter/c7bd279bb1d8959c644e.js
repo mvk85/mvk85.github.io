@@ -1355,7 +1355,7 @@ function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { de
 function login() {
     return new _promise2.default(function (resolve) {
         VK.init({
-            apiId: 5906287
+            apiId: 5992245
         });
         VK.Auth.login(function (result) {
             resolve(result);
