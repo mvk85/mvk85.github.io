@@ -914,3 +914,35 @@
   width:616px;
   height:1px;
 }
+#u79 {
+  position:absolute;
+  left:930px;
+  top:204px;
+  width:19px;
+  height:10px;
+  -webkit-transform:rotate(90deg);
+  -moz-transform:rotate(90deg);
+  -ms-transform:rotate(90deg);
+  transform:rotate(90deg);
+}
+#u79_start {
+  position:absolute;
+  left:0px;
+  top:-5px;
+  width:18px;
+  height:20px;
+}
+#u79_end {
+  position:absolute;
+  left:2px;
+  top:-5px;
+  width:18px;
+  height:20px;
+}
+#u79_line {
+  position:absolute;
+  left:0px;
+  top:5px;
+  width:19px;
+  height:1px;
+}
