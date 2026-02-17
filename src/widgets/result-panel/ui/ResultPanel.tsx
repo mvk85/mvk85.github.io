@@ -11,7 +11,7 @@ export function ResultPanel({ status, resultText, errorMessage }: ResultPanelPro
     return (
       <Paper variant="outlined" sx={{ p: 2 }}>
         <Typography variant="body2" color="text.secondary">
-          Введите Telegram login и нажмите "Поиск".
+          Введите одно слово и нажмите "Поиск".
         </Typography>
       </Paper>
     );

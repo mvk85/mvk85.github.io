@@ -19,8 +19,8 @@ export function SearchForm({ login, status, onLoginChange, onSubmit }: SearchFor
   return (
     <Stack component="form" spacing={1.5} onSubmit={handleSubmit}>
       <TextField
-        label="Telegram login"
-        placeholder="например, @username"
+        label="Слово"
+        placeholder="Слово для синонимов"
         value={login}
         onChange={(event) => onLoginChange(event.target.value)}
         fullWidth

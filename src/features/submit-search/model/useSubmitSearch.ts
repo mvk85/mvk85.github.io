@@ -6,13 +6,13 @@ import { normalizeError } from '@/shared/lib/errors';
 
 type RequestStatus = 'idle' | 'loading' | 'success' | 'error';
 
-function sanitizeTelegramLogin(value: string): string {
-  return value.trim().replace(/^@/, '');
+function sanitizeWord(value: string): string {
+  return value.trim();
 }
 
-function isTelegramLoginValid(value: string): boolean {
-  const login = sanitizeTelegramLogin(value);
-  return /^[a-zA-Z][a-zA-Z0-9_]{3,31}$/.test(login);
+function isSingleWordValid(value: string): boolean {
+  const word = sanitizeWord(value);
+  return word.length > 0 && !/\s/.test(word);
 }
 
 export function useSubmitSearch() {
@@ -22,14 +22,14 @@ export function useSubmitSearch() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const onSubmit = useCallback(async () => {
-    if (!isTelegramLoginValid(login)) {
+    if (!isSingleWordValid(login)) {
       setStatus('error');
       setResultText(null);
-      setErrorMessage('Введите корректный Telegram login (от 4 до 32 символов).');
+      setErrorMessage('Введите одно слово без пробелов.');
       return;
     }
 
-    const normalizedLogin = sanitizeTelegramLogin(login);
+    const normalizedWord = sanitizeWord(login);
 
     try {
       setStatus('loading');
@@ -37,7 +37,7 @@ export function useSubmitSearch() {
       setErrorMessage(null);
 
       const response = await chatApi.createCompletion({
-        userMessage: `Найди информацию по telegram login: @${normalizedLogin}`,
+        userMessage: `Найди 5 синонимов для слова ${normalizedWord}. Ответ возвращай в виде списка обычным текстом`,
       });
 
       const text = mapChatResponseToText(response);

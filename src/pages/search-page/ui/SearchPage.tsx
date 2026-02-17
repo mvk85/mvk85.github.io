@@ -12,7 +12,7 @@ export function SearchPage() {
     <PageContainer>
       <Stack spacing={2}>
         <Typography variant="h5" component="h1" fontWeight={700}>
-          Поиск по Telegram login
+          Поиск синонима
         </Typography>
 
         <SearchForm login={login} status={status} onLoginChange={setLogin} onSubmit={onSubmit} />
