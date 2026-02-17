@@ -1,61 +1,155 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { chatApi } from '@/shared/api/chatApi';
-import { mapChatResponseToText } from '@/entities/chat-response/lib/mapResponse';
+import { chatApi, type ConversationMessage, type ScenarioReply } from '@/shared/api/chatApi';
 import { normalizeError } from '@/shared/lib/errors';
 
 type RequestStatus = 'idle' | 'loading' | 'success' | 'error';
 
-function sanitizeWord(value: string): string {
-  return value.trim();
+export enum Step {
+  ASK_AGE = 'ASK_AGE',
+  ASK_LICENSE = 'ASK_LICENSE',
+  DONE = 'DONE',
 }
 
-function isSingleWordValid(value: string): boolean {
-  const word = sanitizeWord(value);
-  return word.length > 0 && !/\s/.test(word);
+export type ChatUiMessage = {
+  id: string;
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+};
+
+const LICENSE_QUESTION = 'У вас есть водительское удостоверение категории В?';
+const END_DIALOG_MESSAGE = 'Конец диалога.';
+
+function createMessage(role: ChatUiMessage['role'], content: string): ChatUiMessage {
+  return {
+    id: `${Date.now()}-${Math.random()}`,
+    role,
+    content,
+  };
+}
+
+function appendDialogFinishedMessage(messages: ChatUiMessage[]): ChatUiMessage[] {
+  const lastMessage = messages[messages.length - 1];
+
+  if (lastMessage?.role === 'system' && lastMessage.content === END_DIALOG_MESSAGE) {
+    return messages;
+  }
+
+  return [...messages, createMessage('system', END_DIALOG_MESSAGE)];
+}
+
+function resolveNextStep(reply: ScenarioReply): Step {
+  if (reply.kind === 'final') {
+    return Step.DONE;
+  }
+
+  if (reply.text.trim() === LICENSE_QUESTION) {
+    return Step.ASK_LICENSE;
+  }
+
+  return Step.ASK_AGE;
+}
+
+function toApiMessages(messages: ChatUiMessage[]): ConversationMessage[] {
+  return messages.flatMap((message) => {
+    if (message.role !== 'user' && message.role !== 'assistant') {
+      return [];
+    }
+
+    return [{ role: message.role, content: message.content }];
+  });
 }
 
 export function useSubmitSearch() {
-  const [login, setLogin] = useState('');
+  const [inputValue, setInputValue] = useState('');
+  const [messages, setMessages] = useState<ChatUiMessage[]>([]);
   const [status, setStatus] = useState<RequestStatus>('idle');
-  const [resultText, setResultText] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [step, setStep] = useState<Step>(Step.ASK_AGE);
+  const [finished, setFinished] = useState(false);
 
-  const onSubmit = useCallback(async () => {
-    if (!isSingleWordValid(login)) {
-      setStatus('error');
-      setResultText(null);
-      setErrorMessage('Введите одно слово без пробелов.');
+  const hasStartedRef = useRef(false);
+
+  const requestAssistantReply = useCallback(async (history: ConversationMessage[]) => {
+    return chatApi.createCompletion({ messages: history });
+  }, []);
+
+  const applyAssistantReply = useCallback((reply: ScenarioReply) => {
+    setMessages((prevMessages) => {
+      const withAssistant = [...prevMessages, createMessage('assistant', reply.text)];
+
+      if (reply.kind === 'final') {
+        return appendDialogFinishedMessage(withAssistant);
+      }
+
+      return withAssistant;
+    });
+
+    const nextStep = resolveNextStep(reply);
+    setStep(nextStep);
+    setFinished(nextStep === Step.DONE);
+  }, []);
+
+  const sendUserMessage = useCallback(
+    async (text: string) => {
+      const normalized = text.trim();
+
+      if (!normalized || finished || status === 'loading') {
+        return;
+      }
+
+      const userMessage = createMessage('user', normalized);
+      const updatedMessages = [...messages, userMessage];
+
+      setMessages(updatedMessages);
+      setInputValue('');
+      setStatus('loading');
+      setErrorMessage(null);
+
+      try {
+        const reply = await requestAssistantReply(toApiMessages(updatedMessages));
+        applyAssistantReply(reply);
+        setStatus('success');
+      } catch (error: unknown) {
+        setStatus('error');
+        setErrorMessage(normalizeError(error));
+      }
+    },
+    [applyAssistantReply, finished, messages, requestAssistantReply, status],
+  );
+
+  useEffect(() => {
+    if (hasStartedRef.current) {
       return;
     }
 
-    const normalizedWord = sanitizeWord(login);
+    hasStartedRef.current = true;
 
-    try {
+    const run = async () => {
       setStatus('loading');
-      setResultText(null);
       setErrorMessage(null);
 
-      const response = await chatApi.createCompletion({
-        userMessage: `Найди 5 синонимов для слова ${normalizedWord}. Ответ возвращай в виде списка обычным текстом`,
-      });
+      try {
+        const reply = await requestAssistantReply([]);
+        applyAssistantReply(reply);
+        setStatus('success');
+      } catch (error: unknown) {
+        setStatus('error');
+        setErrorMessage(normalizeError(error));
+      }
+    };
 
-      const text = mapChatResponseToText(response);
-      setResultText(text);
-      setStatus('success');
-    } catch (error: unknown) {
-      setStatus('error');
-      setResultText(null);
-      setErrorMessage(normalizeError(error));
-    }
-  }, [login]);
+    void run();
+  }, [applyAssistantReply, requestAssistantReply]);
 
   return {
-    login,
-    setLogin,
+    inputValue,
+    setInputValue,
+    messages,
     status,
-    resultText,
     errorMessage,
-    onSubmit,
+    step,
+    finished,
+    sendUserMessage,
   };
 }
