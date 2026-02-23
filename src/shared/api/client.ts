@@ -8,18 +8,18 @@ export class HttpError extends Error {
   }
 }
 
-export async function postJson<TResponse>(
+async function requestJson<TResponse>(
   url: string,
-  body: unknown,
+  init: RequestInit,
   headers: Record<string, string>,
 ): Promise<TResponse> {
   const response = await fetch(url, {
-    method: 'POST',
+    ...init,
     headers: {
       'Content-Type': 'application/json',
       ...headers,
+      ...(init.headers ?? {}),
     },
-    body: JSON.stringify(body),
   });
 
   const text = await response.text();
@@ -31,4 +31,29 @@ export async function postJson<TResponse>(
   }
 
   return payload as TResponse;
+}
+
+export async function postJson<TResponse>(
+  url: string,
+  body: unknown,
+  headers: Record<string, string>,
+): Promise<TResponse> {
+  return requestJson<TResponse>(
+    url,
+    {
+      method: 'POST',
+      body: JSON.stringify(body),
+    },
+    headers,
+  );
+}
+
+export async function getJson<TResponse>(url: string, headers: Record<string, string>): Promise<TResponse> {
+  return requestJson<TResponse>(
+    url,
+    {
+      method: 'GET',
+    },
+    headers,
+  );
 }

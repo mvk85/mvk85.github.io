@@ -1,11 +1,12 @@
-# Архитектура приложения (Шаг 1, обновлено)
+# Архитектура приложения (Сравнение моделей)
 
 ## 1. Цель
 Собрать одностраничное SPA-приложение на React (без backend), которое:
-- показывает форму с полем ввода Telegram login;
-- отправляет `POST` запрос в OpenAI Proxy API по кнопке `Поиск`;
-- выводит текст ответа модели при успехе;
-- выводит текст ошибки при неуспехе;
+- показывает поле для ввода многострочного JSON тела запроса;
+- по кнопке `Отправить` выполняет последовательные запросы к 3 моделям: `gpt-3.5-turbo`, `gpt-4o`, `gpt-5.2`;
+- перед стартом запрашивает текущий баланс (в рублях), а после каждого запроса дожидается обновления баланса (poll раз в 500ms, до 5 попыток);
+- выводит таблицу сравнения (стоимость запроса, время ответа, токены из `usage`);
+- выводит текст ответа каждой модели ниже таблицы;
 - корректно работает на мобильных и десктопных устройствах (mobile-first);
 - собирается в статические файлы и деплоится на GitHub Pages.
 
@@ -21,6 +22,9 @@
 ### 3.1 Endpoint
 `POST https://openai.api.proxyapi.ru/v1/chat/completions`
 
+### 3.1.1 Баланс (ProxyAPI)
+`GET https://api.proxyapi.ru/proxyapi/balance`
+
 ### 3.2 Заголовки
 - `Content-Type: application/json`
 - `Authorization: Bearer <TOKEN>`
@@ -30,7 +34,7 @@
 ### 3.3 Тело запроса
 ```json
 {
-  "model": "gpt-5.1",
+  "model": "gpt-3.5-turbo",
   "messages": [
     {
       "role": "user",
@@ -40,12 +44,22 @@
 }
 ```
 
-В нашем приложении `content` формируется из введенного Telegram login, например:
-`Найди информацию по telegram login: <логин>`
+В UI пользователь вводит JSON. Поле `model` будет перезаписано на каждую из 3 моделей.
 
 ### 3.4 Формат ответа
 Из ответа используется поле:
 - `choices[0].message.content`
+
+Для таблицы также используется `usage`:
+```json
+{
+  "usage": {
+    "completion_tokens": 10,
+    "prompt_tokens": 9,
+    "total_tokens": 19
+  }
+}
+```
 
 Если поле отсутствует или пустое, считаем это ошибкой парсинга ответа.
 
@@ -98,9 +112,9 @@ src/
 
 ## 6. Экран и UX (Mobile First)
 Один экран:
-- поле ввода `Telegram login` (`TextField`);
-- кнопка `Поиск` (`Button`, на мобильном full width);
-- область результата (`Alert`/`Paper` + `Typography`).
+- `TextField` с многострочным JSON тела запроса;
+- кнопка `Отправить` (на мобильном full width);
+- область результата: прогресс/ошибка, таблица сравнения, ответы моделей.
 
 Состояния UI:
 - `idle` (пусто/подсказка);
@@ -113,26 +127,23 @@ src/
 - на десктопе ограничиваем ширину формы (`maxWidth` около `560px`) и центрируем.
 
 ## 7. Управление состоянием
-На первом этапе достаточно локального состояния в feature-хуке (`useSubmitSearch`):
-- `telegramLogin: string`
+Достаточно локального состояния в feature-хуке (`useCompareModels`):
+- `requestBodyText: string`
 - `status: 'idle' | 'loading' | 'success' | 'error'`
-- `resultText: string | null`
-- `errorMessage: string | null`
-
-Сценарий submit:
-1. Валидация ввода (не пустой логин).
-2. Переход в `loading`, очистка старых данных.
-3. Вызов `chatApi.createCompletion`.
-4. Успех: извлечение `choices[0].message.content` и показ результата.
-5. Ошибка: нормализация и показ текста ошибки.
+- `rows: Array<{ model, costRub, responseTimeSec, promptTokens, completionTokens, totalTokens, responseText }>`
+- `initialBalanceRub: number | null`
+- `errorMessage/progressMessage`
 
 ## 8. Конфигурация env
 Пример `.env`:
 ```env
 VITE_OPENAI_API_URL=https://openai.api.proxyapi.ru/v1/chat/completions
 VITE_OPENAI_API_KEY=sk-...
-VITE_OPENAI_MODEL=gpt-5.1
+VITE_PROXYAPI_API_KEY=sk-...
+VITE_PROXYAPI_BALANCE_URL=https://api.proxyapi.ru/proxyapi/balance
 ```
+
+`VITE_OPENAI_MODEL` опционален (нужен только для старого `chatApi`, если он используется).
 
 Файл `.env` должен быть в `.gitignore`.  
 Для GitHub Pages ключ передается через переменные окружения в CI (или локально перед билдом).
@@ -150,9 +161,10 @@ VITE_OPENAI_MODEL=gpt-5.1
 
 ## 10. Критерии готовности
 - Форма и результат корректно отображаются на mobile/desktop.
-- По клику `Поиск` уходит `POST` запрос в указанный endpoint.
-- При успехе выводится `choices[0].message.content`.
-- При ошибке выводится понятный текст.
+- По клику `Отправить` последовательно выполняются запросы к 3 моделям.
+- После каждого запроса баланс дожидается обновления (до 5 попыток раз в 500ms), стоимость считается по разнице.
+- При успехе строится таблица и выводятся ответы.
+- При ошибке выводится понятный текст (включая ошибку баланса).
 - Проект собирается в статику и открывается на GitHub Pages.
 
 ## 11. Следующий шаг

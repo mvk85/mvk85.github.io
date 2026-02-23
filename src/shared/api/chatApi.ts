@@ -41,8 +41,18 @@ function mapContentToScenarioReply(content: string): ScenarioReply {
 
 export const chatApi = {
   createCompletion: async ({ messages }: CreateCompletionParams): Promise<ScenarioReply> => {
+    if (!env.openAiApiUrl) {
+      throw new Error('Не задан VITE_OPENAI_API_URL в .env');
+    }
+    if (!env.openAiApiKey) {
+      throw new Error('Не задан VITE_OPENAI_API_KEY в .env');
+    }
+    if (!env.model) {
+      throw new Error('Не задан VITE_OPENAI_MODEL в .env');
+    }
+
     const response = await postJson<ChatCompletionResponse>(
-      env.apiUrl,
+      env.openAiApiUrl,
       {
         model: env.model,
         temperature: 0,
@@ -76,7 +86,7 @@ export const chatApi = {
         ],
       },
       {
-        Authorization: `Bearer ${env.apiKey}`,
+        Authorization: `Bearer ${env.openAiApiKey}`,
       },
     );
 

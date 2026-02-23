@@ -1,3 +1,9 @@
+export type ChatCompletionUsage = {
+  completion_tokens: number;
+  prompt_tokens: number;
+  total_tokens: number;
+};
+
 export type ChatCompletionResponse = {
   id: string;
   created: number;
@@ -11,4 +17,5 @@ export type ChatCompletionResponse = {
       content: string | null;
     };
   }>;
+  usage?: ChatCompletionUsage;
 };
