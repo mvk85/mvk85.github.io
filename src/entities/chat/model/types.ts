@@ -6,7 +6,6 @@ export type ChatMessage = {
 };
 
 export type ChatCompletionPayload = {
-  model: 'gpt-4o';
+  model: string;
   messages: ChatMessage[];
 };
-
