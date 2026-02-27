@@ -1,11 +1,21 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { buildChatCompletionPayload } from '@/entities/chat/lib/buildPayload';
+import { initializeCompressionEnabled, saveCompressionEnabled } from '@/entities/chat/lib/compressionStorage';
+import { buildContext } from '@/entities/chat/lib/contextBuilder';
 import { LIMIT_REACHED_TEXT, USER_MESSAGE_LIMIT } from '@/entities/chat/lib/constants';
-import { initializeChatMessages, loadChatMessages, resetChatMessages, saveChatMessages } from '@/entities/chat/lib/storage';
+import { createSummaryService } from '@/entities/chat/lib/summaryService';
+import { getNextMessageId, initializeChatMessages, loadChatMessages, resetChatMessages, saveChatMessages } from '@/entities/chat/lib/storage';
+import {
+  initializeChatSummaryState,
+  loadChatSummaryState,
+  resetChatSummaryState,
+  saveChatSummaryState,
+} from '@/entities/chat/lib/summaryStorage';
 import type { ChatMessage } from '@/entities/chat/model/types';
 import type { ChatCompletionUsage } from '@/entities/chat-response/model/types';
 import { openAiProxyChatApi } from '@/shared/api/openAiProxyChatApi';
+import { env } from '@/shared/config/env';
 import { normalizeError } from '@/shared/lib/errors';
 
 type RequestStatus = 'idle' | 'loading' | 'success' | 'error';
@@ -180,14 +190,27 @@ function countUserMessages(messages: ChatMessage[]): number {
 export function useChat() {
   const [inputValue, setInputValue] = useState('');
   const [messages, setMessages] = useState<ChatMessage[]>(() => initializeChatMessages());
+  const [summaryState, setSummaryState] = useState(() => initializeChatSummaryState());
+  const [compressionEnabled, setCompressionEnabled] = useState<boolean>(() => initializeCompressionEnabled(env.summaryEnabledDefault));
   const [statsState, setStatsState] = useState<ChatStatsState>(() => initializeChatStats());
   const [status, setStatus] = useState<RequestStatus>('idle');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
+  const summaryService = useMemo(
+    () =>
+      createSummaryService({
+        summaryChunkSize: env.summaryChunkSize,
+        summaryKeepLast: env.summaryKeepLast,
+        summaryLanguage: env.summaryLanguage,
+        mainModel: env.llmModelMain,
+        summaryModel: env.llmModelSummary,
+        createChatCompletion: openAiProxyChatApi.createChatCompletion,
+      }),
+    [],
+  );
+
   const userMessageCount = useMemo(() => countUserMessages(messages), [messages]);
   const isLimitReached = userMessageCount >= USER_MESSAGE_LIMIT;
-
-  const visibleMessages = useMemo(() => messages.filter((message) => message.role !== 'system'), [messages]);
   const limitNotice = isLimitReached ? LIMIT_REACHED_TEXT : null;
 
   const refreshInitialBalance = useCallback(async () => {
@@ -213,6 +236,11 @@ export function useChat() {
     });
   }, [refreshInitialBalance, statsState.previousBalance]);
 
+  const toggleCompression = useCallback((enabled: boolean) => {
+    setCompressionEnabled(enabled);
+    saveCompressionEnabled(enabled);
+  }, []);
+
   const sendUserMessage = useCallback(async () => {
     const normalizedInput = inputValue.trim();
 
@@ -220,7 +248,13 @@ export function useChat() {
       return;
     }
 
-    const nextMessages: ChatMessage[] = [...messages, { role: 'user', content: normalizedInput }];
+    const userMessage: ChatMessage = {
+      id: getNextMessageId(messages),
+      role: 'user',
+      content: normalizedInput,
+    };
+
+    const nextMessages: ChatMessage[] = [...messages, userMessage];
     saveChatMessages(nextMessages);
     setMessages(nextMessages);
     setInputValue('');
@@ -233,8 +267,34 @@ export function useChat() {
             throw new Error('Баланс не получен.');
           })
         : Promise.resolve(statsState.previousBalance));
+
       const historyFromStorage = loadChatMessages() ?? nextMessages;
-      const payload = buildChatCompletionPayload(historyFromStorage);
+      const summaryStateFromStorage = loadChatSummaryState() ?? summaryState;
+
+      const contextResult = await buildContext({
+        compressionEnabled,
+        rawMessages: historyFromStorage,
+        summaryState: summaryStateFromStorage,
+        summaryKeepLast: env.summaryKeepLast,
+        summaryService,
+      });
+
+      if (contextResult.summaryState !== summaryStateFromStorage) {
+        saveChatSummaryState(contextResult.summaryState);
+        setSummaryState(contextResult.summaryState);
+      }
+
+      console.info(
+        `[context] compression=${compressionEnabled ? 'ON' : 'OFF'}, rawChars=${contextResult.metrics.rawChars}, contextChars=${contextResult.metrics.contextChars}`,
+      );
+
+      if (contextResult.metrics.compressedMessagesCount > 0) {
+        console.info(
+          `[summary] compressedMessages=${contextResult.metrics.compressedMessagesCount}, coveredUntilMessageId=${contextResult.metrics.coveredUntilMessageId}`,
+        );
+      }
+
+      const payload = buildChatCompletionPayload(contextResult.contextMessages, env.llmModelMain);
       const response = await openAiProxyChatApi.createChatCompletion(payload);
       const assistantText = extractAssistantText(response);
       const usage = extractUsage(response);
@@ -248,7 +308,12 @@ export function useChat() {
       }
 
       const freshHistory = loadChatMessages() ?? historyFromStorage;
-      const assistantMessage: ChatMessage = { role: 'assistant', content: assistantText };
+      const assistantMessage: ChatMessage = {
+        id: getNextMessageId(freshHistory),
+        role: 'assistant',
+        content: assistantText,
+      };
+
       const updatedMessages = [...freshHistory, assistantMessage];
       saveChatMessages(updatedMessages);
       setMessages(updatedMessages);
@@ -282,12 +347,15 @@ export function useChat() {
       setStatus('error');
       setErrorMessage(normalizeError(error));
     }
-  }, [inputValue, isLimitReached, messages, statsState, status]);
+  }, [compressionEnabled, inputValue, isLimitReached, messages, statsState, status, summaryService, summaryState]);
 
   const clearChat = useCallback(() => {
     const initialMessages = resetChatMessages();
+    const initialSummaryState = resetChatSummaryState();
     const initialStatsState = resetChatStats();
+
     setMessages(initialMessages);
+    setSummaryState(initialSummaryState);
     setStatsState(initialStatsState);
     setInputValue('');
     setStatus('idle');
@@ -301,18 +369,20 @@ export function useChat() {
 
   return {
     clearChat,
+    compressionEnabled,
     errorMessage,
     inputValue,
     isLimitReached,
     isLoading: status === 'loading',
     limitNotice,
-    messages: visibleMessages,
+    messages,
     lastResponseStats: statsState.lastResponse,
-    statsItems: statsState.items,
-    totalCost: statsState.totalCost,
+    setCompressionEnabled: toggleCompression,
     setInputValue,
     sendUserMessage,
+    statsItems: statsState.items,
     status,
+    totalCost: statsState.totalCost,
     userMessageCount,
   };
 }

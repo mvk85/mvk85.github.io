@@ -1,5 +1,5 @@
 import { useEffect, useRef, type FormEvent, type KeyboardEvent } from 'react';
-import { Alert, Box, Button, CircularProgress, Paper, Stack, TextField, Typography } from '@mui/material';
+import { Alert, Box, Button, CircularProgress, FormControlLabel, Paper, Stack, Switch, TextField, Typography } from '@mui/material';
 
 import { USER_MESSAGE_LIMIT } from '@/entities/chat/lib/constants';
 import { useChat } from '@/features/chat/model/useChat';
@@ -12,6 +12,7 @@ function formatRubles(value: number): string {
 export function SearchPage() {
   const {
     clearChat,
+    compressionEnabled,
     errorMessage,
     inputValue,
     isLimitReached,
@@ -20,6 +21,7 @@ export function SearchPage() {
     lastResponseStats,
     messages,
     sendUserMessage,
+    setCompressionEnabled,
     setInputValue,
     statsItems,
     totalCost,
@@ -54,11 +56,17 @@ export function SearchPage() {
       <Stack spacing={2.5}>
         <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: 'stretch', sm: 'center' }}>
           <Typography variant="h5" component="h1" fontWeight={700}>
-            Философский чат
+            Чат
           </Typography>
-          <Button variant="outlined" color="inherit" onClick={clearChat}>
-            Очистить чат
-          </Button>
+          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ xs: 'flex-start', sm: 'center' }}>
+            <FormControlLabel
+              control={<Switch checked={compressionEnabled} onChange={(event) => setCompressionEnabled(event.target.checked)} />}
+              label="Сжатие истории"
+            />
+            <Button variant="outlined" color="inherit" onClick={clearChat}>
+              Очистить чат
+            </Button>
+          </Stack>
         </Stack>
 
         <Stack
@@ -79,8 +87,7 @@ export function SearchPage() {
                 <Typography variant="body2">Токены ответа: {lastResponseStats.completionTokens}</Typography>
                 <Typography variant="body2">Токены всего: {lastResponseStats.totalTokens}</Typography>
                 <Typography variant="body2">
-                  Стоимость последнего запроса:{' '}
-                  {lastResponseStats.requestCost === null ? '—' : formatRubles(lastResponseStats.requestCost)}
+                  Стоимость последнего запроса: {lastResponseStats.requestCost === null ? '—' : formatRubles(lastResponseStats.requestCost)}
                 </Typography>
                 <Typography variant="body2">Общая стоимость: {formatRubles(totalCost)}</Typography>
               </Stack>
@@ -139,11 +146,11 @@ export function SearchPage() {
                   </Typography>
                 ) : null}
 
-                {messages.map((message, index) => {
+                {messages.map((message) => {
                   const isUser = message.role === 'user';
                   return (
                     <Box
-                      key={`${message.role}-${index}`}
+                      key={message.id}
                       sx={{
                         alignSelf: isUser ? 'flex-end' : 'flex-start',
                         maxWidth: { xs: '90%', sm: '80%' },

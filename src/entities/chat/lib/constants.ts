@@ -1,7 +1,6 @@
-export const CHAT_STORAGE_KEY = 'chat_messages_v1';
+export const CHAT_STORAGE_KEY = 'chat_messages_v2';
+export const CHAT_SUMMARY_STORAGE_KEY = 'chat_summary_v1';
+export const CHAT_COMPRESSION_ENABLED_STORAGE_KEY = 'chat_compression_enabled_v1';
+
 export const USER_MESSAGE_LIMIT = 50;
-
-export const DEFAULT_SYSTEM_PROMPT =
-  'Ты философ и готов пообщаться на различные темы, где можно порассуждать, если вопрос выходит за границы рассуждения, например о программировании, то просто отвечаешь, что про эти темы у тебя нет компетенций общаться и лучше поговорить на темы и приводить десять тем для примера';
-
 export const LIMIT_REACHED_TEXT = 'Лимит в 50 сообщений достигнут';

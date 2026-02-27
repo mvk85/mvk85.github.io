@@ -1,22 +1,38 @@
-import { CHAT_STORAGE_KEY, DEFAULT_SYSTEM_PROMPT } from '@/entities/chat/lib/constants';
+import { CHAT_STORAGE_KEY } from '@/entities/chat/lib/constants';
 import type { ChatMessage } from '@/entities/chat/model/types';
 
-function isChatMessage(value: unknown): value is ChatMessage {
+type StoredChatMessage = {
+  id?: unknown;
+  role?: unknown;
+  content?: unknown;
+};
+
+function isValidRole(value: unknown): value is ChatMessage['role'] {
+  return value === 'user' || value === 'assistant';
+}
+
+function normalizeChatMessage(value: unknown, fallbackId: number): ChatMessage | null {
   if (typeof value !== 'object' || value === null) {
-    return false;
+    return null;
   }
 
-  const candidate = value as Partial<ChatMessage>;
+  const candidate = value as StoredChatMessage;
 
-  return (
-    (candidate.role === 'system' || candidate.role === 'user' || candidate.role === 'assistant') &&
-    typeof candidate.content === 'string' &&
-    candidate.content.trim().length > 0
-  );
+  if (!isValidRole(candidate.role) || typeof candidate.content !== 'string' || candidate.content.trim().length === 0) {
+    return null;
+  }
+
+  const id = typeof candidate.id === 'number' && Number.isInteger(candidate.id) && candidate.id > 0 ? candidate.id : fallbackId;
+
+  return {
+    id,
+    role: candidate.role,
+    content: candidate.content.trim(),
+  };
 }
 
 export function createInitialChatMessages(): ChatMessage[] {
-  return [{ role: 'system', content: DEFAULT_SYSTEM_PROMPT }];
+  return [];
 }
 
 export function saveChatMessages(messages: ChatMessage[]): void {
@@ -31,10 +47,20 @@ export function loadChatMessages(): ChatMessage[] | null {
 
   try {
     const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed) || !parsed.every(isChatMessage)) {
+    if (!Array.isArray(parsed)) {
       return null;
     }
-    return parsed;
+
+    const normalized: ChatMessage[] = [];
+    for (let index = 0; index < parsed.length; index += 1) {
+      const message = normalizeChatMessage(parsed[index], index + 1);
+      if (!message) {
+        continue;
+      }
+      normalized.push(message);
+    }
+
+    return normalized;
   } catch {
     return null;
   }
@@ -58,3 +84,7 @@ export function resetChatMessages(): ChatMessage[] {
   return initialMessages;
 }
 
+export function getNextMessageId(messages: ChatMessage[]): number {
+  const lastMessage = messages[messages.length - 1];
+  return lastMessage ? lastMessage.id + 1 : 1;
+}

@@ -174,3 +174,11 @@ VITE_PROXYAPI_BALANCE_URL=https://api.proxyapi.ru/proxyapi/balance
 4. Реализовать API-слой и обработку состояний.
 5. Настроить deploy на GitHub Pages.
 # mvk85.github.io
+
+## Переменные окружения для чата
+- `VITE_LLM_MODEL_MAIN` - основная модель для ответов.
+- `VITE_LLM_MODEL_SUMMARY` - модель для summary (опционально, fallback на `VITE_LLM_MODEL_MAIN`).
+- `VITE_SUMMARY_CHUNK_SIZE` - размер батча для summary (по умолчанию `5`).
+- `VITE_SUMMARY_KEEP_LAST` - сколько последних raw-сообщений держать в контексте (по умолчанию `5`).
+- `VITE_SUMMARY_ENABLED_DEFAULT` - значение toggle сжатия по умолчанию (`true`/`false`).
+- `VITE_SUMMARY_LANGUAGE` - язык summary (по умолчанию `ru`).
