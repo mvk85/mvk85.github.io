@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { buildChatCompletionPayload } from '@/entities/chat/lib/buildPayload';
 import { buildContextByStrategy } from '@/entities/chat/lib/contextStrategies';
 import { LIMIT_REACHED_TEXT, USER_MESSAGE_LIMIT } from '@/entities/chat/lib/constants';
-import { createBranchedChatSession, createEmptyChatSession, initializeChatSessionsState, prepareHistoryChat, saveChatSessionsState } from '@/entities/chat/lib/sessionStorage';
+import { createBranchedChatSession, createEmptyChatSession, initializeChatSessionsStateWithDiagnostics, prepareHistoryChat, saveChatSessionsState } from '@/entities/chat/lib/sessionStorage';
 import { getNextMessageId } from '@/entities/chat/lib/storage';
 import type { ChatContextStrategy, ChatMessage, ChatSession, Strategy2Facts } from '@/entities/chat/model/types';
 import type { ChatCompletionUsage } from '@/entities/chat-response/model/types';
@@ -13,6 +13,7 @@ import { normalizeError } from '@/shared/lib/errors';
 
 type RequestStatus = 'idle' | 'loading' | 'success' | 'error';
 const CHAT_STATS_STORAGE_KEY = 'chat_stats_v1';
+const CHAT_WITHOUT_STRATEGY_ERROR = 'Чат без стратегии, отобразить нельзя.';
 const FACT_EXTRACTOR_SYSTEM_PROMPT = `Ты извлекаешь из одного сообщения пользователя краткие факты для памяти диалога.
 Верни только новые/уточнённые факты из ТЕКУЩЕГО сообщения.
 Формат ответа: строго JSON-объект key-value, без пояснений и без markdown.
@@ -379,14 +380,17 @@ function syncChatToHistory(history: ChatSession[], chat: ChatSession): ChatSessi
 }
 
 export function useChat() {
-  const initialSessionsState = useMemo(() => initializeChatSessionsState(), []);
+  const initialSessionsStateDiagnostics = useMemo(() => initializeChatSessionsStateWithDiagnostics(), []);
+  const initialSessionsState = initialSessionsStateDiagnostics.state;
 
   const [inputValue, setInputValue] = useState('');
   const [currentChat, setCurrentChat] = useState<ChatSession>(initialSessionsState.currentChat);
   const [chatHistory, setChatHistory] = useState<ChatSession[]>(initialSessionsState.chatHistory);
   const [statsState, setStatsState] = useState<ChatStatsState>(() => initializeChatStats(initialSessionsState.currentChat.id));
   const [status, setStatus] = useState<RequestStatus>('idle');
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(
+    initialSessionsStateDiagnostics.hasChatsWithoutStrategy ? CHAT_WITHOUT_STRATEGY_ERROR : null,
+  );
 
   const messages = currentChat.messages;
   const currentChatStats = useMemo(() => getChatStats(statsState, currentChat.id), [currentChat.id, statsState]);
@@ -607,7 +611,7 @@ export function useChat() {
 
   const setStrategy1WindowSize = useCallback(
     (windowSize: number) => {
-      if (status === 'loading' || !Number.isInteger(windowSize) || windowSize <= 0) {
+      if (status === 'loading' || !isChatEmpty(currentChat) || !Number.isInteger(windowSize) || windowSize <= 0) {
         return false;
       }
 
@@ -640,7 +644,7 @@ export function useChat() {
 
   const setStrategy2WindowSize = useCallback(
     (windowSize: number) => {
-      if (status === 'loading' || !Number.isInteger(windowSize) || windowSize < 0) {
+      if (status === 'loading' || !isChatEmpty(currentChat) || !Number.isInteger(windowSize) || windowSize < 0) {
         return false;
       }
 

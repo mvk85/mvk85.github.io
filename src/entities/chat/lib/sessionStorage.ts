@@ -22,6 +22,16 @@ type StoredChatSessionsState = {
   chatHistory?: unknown;
 };
 
+type NormalizeChatSessionResult = {
+  chat: ChatSession | null;
+  hasMissingStrategy: boolean;
+};
+
+export type ChatSessionsStateDiagnostics = {
+  state: ChatSessionsState;
+  hasChatsWithoutStrategy: boolean;
+};
+
 function isValidRole(value: unknown): value is ChatMessage['role'] {
   return value === 'user' || value === 'assistant';
 }
@@ -193,18 +203,34 @@ export function createChatSession(params?: {
   };
 }
 
-function normalizeChatSession(value: unknown): ChatSession | null {
+function normalizeChatSession(value: unknown): NormalizeChatSessionResult {
   if (typeof value !== 'object' || value === null) {
-    return null;
+    return {
+      chat: null,
+      hasMissingStrategy: false,
+    };
   }
 
   const candidate = value as StoredChatSession;
   if (typeof candidate.id !== 'string' || typeof candidate.createdAt !== 'string') {
-    return null;
+    return {
+      chat: null,
+      hasMissingStrategy: false,
+    };
   }
 
   if (!Array.isArray(candidate.messages)) {
-    return null;
+    return {
+      chat: null,
+      hasMissingStrategy: false,
+    };
+  }
+
+  if (!isValidContextStrategy(candidate.contextStrategy)) {
+    return {
+      chat: null,
+      hasMissingStrategy: true,
+    };
   }
 
   const normalizedMessages: ChatMessage[] = [];
@@ -216,14 +242,17 @@ function normalizeChatSession(value: unknown): ChatSession | null {
   }
 
   return {
-    id: candidate.id,
-    createdAt: candidate.createdAt,
-    parentChatId: typeof candidate.parentChatId === 'string' ? candidate.parentChatId : null,
-    title: typeof candidate.title === 'string' ? candidate.title : normalizeChatTitle(normalizedMessages),
-    messages: normalizedMessages,
-    summaryState: normalizeSummaryState(candidate.summaryState),
-    contextStrategy: isValidContextStrategy(candidate.contextStrategy) ? candidate.contextStrategy : 'strategy-1',
-    strategySettings: normalizeStrategySettings(candidate.strategySettings),
+    chat: {
+      id: candidate.id,
+      createdAt: candidate.createdAt,
+      parentChatId: typeof candidate.parentChatId === 'string' ? candidate.parentChatId : null,
+      title: typeof candidate.title === 'string' ? candidate.title : normalizeChatTitle(normalizedMessages),
+      messages: normalizedMessages,
+      summaryState: normalizeSummaryState(candidate.summaryState),
+      contextStrategy: candidate.contextStrategy,
+      strategySettings: normalizeStrategySettings(candidate.strategySettings),
+    },
+    hasMissingStrategy: false,
   };
 }
 
@@ -262,33 +291,64 @@ export function saveChatSessionsState(state: ChatSessionsState): void {
 }
 
 export function loadChatSessionsState(): ChatSessionsState | null {
+  return loadChatSessionsStateWithDiagnostics().state;
+}
+
+export function loadChatSessionsStateWithDiagnostics(): { state: ChatSessionsState | null; hasChatsWithoutStrategy: boolean } {
   const raw = localStorage.getItem(CHAT_SESSIONS_STORAGE_KEY);
   if (!raw) {
-    return null;
+    return {
+      state: null,
+      hasChatsWithoutStrategy: false,
+    };
   }
 
   try {
     const parsed = JSON.parse(raw) as StoredChatSessionsState;
-    const currentChat = normalizeChatSession(parsed.currentChat);
-    if (!currentChat || !Array.isArray(parsed.chatHistory)) {
-      return null;
+    if (!Array.isArray(parsed.chatHistory)) {
+      return {
+        state: null,
+        hasChatsWithoutStrategy: false,
+      };
     }
 
-    const chatHistory = parsed.chatHistory.map((item) => normalizeChatSession(item)).filter((item): item is ChatSession => item !== null);
+    const currentChatResult = normalizeChatSession(parsed.currentChat);
+    let hasChatsWithoutStrategy = currentChatResult.hasMissingStrategy;
+    const chatHistory: ChatSession[] = [];
+    for (const item of parsed.chatHistory) {
+      const normalizedChat = normalizeChatSession(item);
+      hasChatsWithoutStrategy = hasChatsWithoutStrategy || normalizedChat.hasMissingStrategy;
+      if (normalizedChat.chat) {
+        chatHistory.push(normalizedChat.chat);
+      }
+    }
 
     return {
-      currentChat,
-      chatHistory,
+      state: {
+        currentChat: currentChatResult.chat ?? createEmptyChatSession(),
+        chatHistory,
+      },
+      hasChatsWithoutStrategy,
     };
   } catch {
-    return null;
+    return {
+      state: null,
+      hasChatsWithoutStrategy: false,
+    };
   }
 }
 
 export function initializeChatSessionsState(): ChatSessionsState {
-  const storedState = loadChatSessionsState();
-  if (storedState) {
-    return storedState;
+  return initializeChatSessionsStateWithDiagnostics().state;
+}
+
+export function initializeChatSessionsStateWithDiagnostics(): ChatSessionsStateDiagnostics {
+  const storedState = loadChatSessionsStateWithDiagnostics();
+  if (storedState.state) {
+    return {
+      state: storedState.state,
+      hasChatsWithoutStrategy: storedState.hasChatsWithoutStrategy,
+    };
   }
 
   const migratedMessages = loadChatMessages() ?? [];
@@ -303,7 +363,10 @@ export function initializeChatSessionsState(): ChatSessionsState {
   };
 
   saveChatSessionsState(initialState);
-  return initialState;
+  return {
+    state: initialState,
+    hasChatsWithoutStrategy: false,
+  };
 }
 
 export function createEmptyChatSession(contextStrategy: ChatContextStrategy = 'strategy-1'): ChatSession {

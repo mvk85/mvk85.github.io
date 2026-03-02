@@ -10,10 +10,6 @@ import {
   Box,
   Button,
   CircularProgress,
-  Dialog,
-  DialogActions,
-  DialogContent,
-  DialogContentText,
   FormControl,
   FormControlLabel,
   IconButton,
@@ -52,8 +48,6 @@ function formatHistoryTitle(chat: ChatSession): string {
 }
 
 export function SearchPage() {
-  const [pendingStrategy, setPendingStrategy] = useState<ChatContextStrategy | null>(null);
-  const [isStrategyDialogOpen, setIsStrategyDialogOpen] = useState(false);
   const [strategy1WindowInput, setStrategy1WindowInput] = useState('10');
   const [strategy2WindowInput, setStrategy2WindowInput] = useState('10');
   const [historyMenuAnchor, setHistoryMenuAnchor] = useState<null | HTMLElement>(null);
@@ -107,6 +101,7 @@ export function SearchPage() {
   };
 
   const isSubmitDisabled = isLoading || isLimitReached || inputValue.trim().length === 0;
+  const isCurrentChatEmpty = messages.length === 0;
 
   const handleInputKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key !== 'Enter' || !event.ctrlKey) {
@@ -120,33 +115,11 @@ export function SearchPage() {
   };
 
   const handleStrategyChange = (nextStrategy: ChatContextStrategy) => {
-    if (nextStrategy === currentChatStrategy) {
+    if (nextStrategy === currentChatStrategy || !isCurrentChatEmpty) {
       return;
     }
 
-    if (messages.length === 0) {
-      setCurrentChatStrategy(nextStrategy);
-      return;
-    }
-
-    setPendingStrategy(nextStrategy);
-    setIsStrategyDialogOpen(true);
-  };
-
-  const handleStrategyConfirm = () => {
-    if (!pendingStrategy) {
-      setIsStrategyDialogOpen(false);
-      return;
-    }
-
-    createNewChat(pendingStrategy, { discardCurrentChat: true });
-    setPendingStrategy(null);
-    setIsStrategyDialogOpen(false);
-  };
-
-  const handleStrategyCancel = () => {
-    setPendingStrategy(null);
-    setIsStrategyDialogOpen(false);
+    setCurrentChatStrategy(nextStrategy);
   };
 
   const handleStrategy1WindowInputChange = (nextValue: string) => {
@@ -255,10 +228,29 @@ export function SearchPage() {
                 <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 0.5 }}>
                   Стратегии
                 </Typography>
-                <RadioGroup value={currentChatStrategy} onChange={(_, value) => handleStrategyChange(value as ChatContextStrategy)}>
-                  <FormControlLabel value="strategy-1" control={<Radio />} label="Стратегия 1: Sliding Window" />
-                  <FormControlLabel value="strategy-2" control={<Radio />} label="Стратегия 2: Sticky Facts / Key-Value Memory" />
-                  <FormControlLabel value="strategy-3" control={<Radio />} label="Стратегия 3: Branching (ветки диалога)" />
+                <RadioGroup
+                  value={currentChatStrategy}
+                  onChange={(_, value) => handleStrategyChange(value as ChatContextStrategy)}
+                  sx={{ opacity: isCurrentChatEmpty ? 1 : 0.75 }}
+                >
+                  <FormControlLabel
+                    value="strategy-1"
+                    control={<Radio />}
+                    disabled={!isCurrentChatEmpty || isLoading}
+                    label="Стратегия 1: Sliding Window"
+                  />
+                  <FormControlLabel
+                    value="strategy-2"
+                    control={<Radio />}
+                    disabled={!isCurrentChatEmpty || isLoading}
+                    label="Стратегия 2: Sticky Facts / Key-Value Memory"
+                  />
+                  <FormControlLabel
+                    value="strategy-3"
+                    control={<Radio />}
+                    disabled={!isCurrentChatEmpty || isLoading}
+                    label="Стратегия 3: Branching (ветки диалога)"
+                  />
                 </RadioGroup>
               </FormControl>
               <Box>
@@ -272,6 +264,7 @@ export function SearchPage() {
                     onChange={(event) => handleStrategy1WindowInputChange(event.target.value)}
                     onBlur={handleStrategy1WindowBlur}
                     size="small"
+                    disabled={!isCurrentChatEmpty || isLoading}
                     inputProps={{ inputMode: 'numeric', pattern: '[0-9]*', min: 1 }}
                     helperText="Только положительные целые числа. По умолчанию: 10."
                   />
@@ -282,6 +275,7 @@ export function SearchPage() {
                     onChange={(event) => handleStrategy2WindowInputChange(event.target.value)}
                     onBlur={handleStrategy2WindowBlur}
                     size="small"
+                    disabled={!isCurrentChatEmpty || isLoading}
                     inputProps={{ inputMode: 'numeric', pattern: '[0-9]*', min: 0 }}
                     helperText="Только целые неотрицательные числа. По умолчанию: 10."
                   />
@@ -317,6 +311,11 @@ export function SearchPage() {
                 <Typography variant="h6" component="h2" fontWeight={700}>
                   Ваши чаты
                 </Typography>
+                {!isCurrentChatEmpty ? (
+                  <Typography variant="caption" color="text.secondary">
+                    Для непустого чата стратегия доступна только для просмотра.
+                  </Typography>
+                ) : null}
                 {chatHistory.length === 0 ? (
                   <Typography variant="body2" color="text.secondary">
                     История пока пуста.
@@ -493,20 +492,6 @@ export function SearchPage() {
           Удалить
         </MenuItem>
       </Menu>
-
-      <Dialog open={isStrategyDialogOpen} onClose={handleStrategyCancel}>
-        <DialogContent>
-          <DialogContentText>
-            Изменение стратегии возможно только для пустого чата
-            <br />
-            Создать новый чат?
-          </DialogContentText>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={handleStrategyConfirm}>ok</Button>
-          <Button onClick={handleStrategyCancel}>cancel</Button>
-        </DialogActions>
-      </Dialog>
     </PageContainer>
   );
 }

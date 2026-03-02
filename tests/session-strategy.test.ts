@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { CHAT_SESSIONS_STORAGE_KEY } from '../src/entities/chat/lib/constants';
-import { createBranchedChatSession, createChatSession, createEmptyChatSession, loadChatSessionsState } from '../src/entities/chat/lib/sessionStorage';
+import { createBranchedChatSession, createChatSession, createEmptyChatSession, loadChatSessionsStateWithDiagnostics } from '../src/entities/chat/lib/sessionStorage';
 
 class MemoryStorage implements Storage {
   private store = new Map<string, string>();
@@ -59,7 +59,7 @@ describe('chat strategy storage', () => {
     expect(chat.strategySettings.strategy2Facts).toEqual({});
   });
 
-  it('старые сохраненные чаты без стратегии мигрируются в strategy-1', () => {
+  it('чаты без стратегии не загружаются и помечаются диагностикой', () => {
     localStorage.setItem(
       CHAT_SESSIONS_STORAGE_KEY,
       JSON.stringify({
@@ -76,23 +76,30 @@ describe('chat strategy storage', () => {
             messages: [{ id: 1, role: 'assistant', content: 'hi' }],
             summaryState: { summaryText: '', coveredUntilMessageId: null, updatedAt: null },
           },
+          {
+            id: 'chat-3',
+            createdAt: '2026-01-03T00:00:00.000Z',
+            contextStrategy: 'strategy-3',
+            messages: [{ id: 1, role: 'assistant', content: 'valid chat' }],
+            summaryState: { summaryText: '', coveredUntilMessageId: null, updatedAt: null },
+          },
         ],
       }),
     );
 
-    const state = loadChatSessionsState();
+    const diagnostics = loadChatSessionsStateWithDiagnostics();
+    const state = diagnostics.state;
 
     expect(state).not.toBeNull();
+    expect(diagnostics.hasChatsWithoutStrategy).toBe(true);
     expect(state?.currentChat.contextStrategy).toBe('strategy-1');
     expect(state?.currentChat.parentChatId).toBeNull();
     expect(state?.currentChat.strategySettings.strategy1WindowSize).toBe(10);
     expect(state?.currentChat.strategySettings.strategy2WindowSize).toBe(10);
     expect(state?.currentChat.strategySettings.strategy2Facts).toEqual({});
-    expect(state?.chatHistory[0].contextStrategy).toBe('strategy-1');
-    expect(state?.chatHistory[0].parentChatId).toBeNull();
-    expect(state?.chatHistory[0].strategySettings.strategy1WindowSize).toBe(10);
-    expect(state?.chatHistory[0].strategySettings.strategy2WindowSize).toBe(10);
-    expect(state?.chatHistory[0].strategySettings.strategy2Facts).toEqual({});
+    expect(state?.chatHistory).toHaveLength(1);
+    expect(state?.chatHistory[0].id).toBe('chat-3');
+    expect(state?.chatHistory[0].contextStrategy).toBe('strategy-3');
   });
 
   it('создает ветку с parentChatId, инкрементным суффиксом и полным клонированием', () => {
