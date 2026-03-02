@@ -1,7 +1,35 @@
-import { useEffect, useRef, type FormEvent, type KeyboardEvent } from 'react';
-import { Alert, Box, Button, CircularProgress, FormControlLabel, Paper, Stack, Switch, TextField, Typography } from '@mui/material';
+import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type MouseEvent } from 'react';
+import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import MoreHorizIcon from '@mui/icons-material/MoreHoriz';
+import {
+  Accordion,
+  AccordionDetails,
+  AccordionSummary,
+  Alert,
+  Box,
+  Button,
+  CircularProgress,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogContentText,
+  FormControl,
+  FormControlLabel,
+  IconButton,
+  Menu,
+  MenuItem,
+  Paper,
+  Radio,
+  RadioGroup,
+  Stack,
+  TextField,
+  Typography,
+} from '@mui/material';
 
+import type { ChatContextStrategy, ChatSession } from '@/entities/chat/model/types';
 import { USER_MESSAGE_LIMIT } from '@/entities/chat/lib/constants';
+import { MarkdownMessage } from '@/entities/chat-response/ui/MarkdownMessage';
 import { useChat } from '@/features/chat/model/useChat';
 import { PageContainer } from '@/shared/ui/PageContainer';
 
@@ -9,29 +37,69 @@ function formatRubles(value: number): string {
   return `${value.toFixed(6).replace('.', ',')} ₽`;
 }
 
+function formatHistoryTitle(chat: ChatSession): string {
+  if (chat.title) {
+    return chat.title;
+  }
+
+  const firstMessage = chat.messages[0];
+  if (!firstMessage) {
+    return 'Новый чат';
+  }
+
+  const compact = firstMessage.content.replace(/\s+/g, ' ').trim();
+  return compact.length > 42 ? `${compact.slice(0, 42)}...` : compact;
+}
+
 export function SearchPage() {
+  const [pendingStrategy, setPendingStrategy] = useState<ChatContextStrategy | null>(null);
+  const [isStrategyDialogOpen, setIsStrategyDialogOpen] = useState(false);
+  const [strategy1WindowInput, setStrategy1WindowInput] = useState('10');
+  const [strategy2WindowInput, setStrategy2WindowInput] = useState('10');
+  const [historyMenuAnchor, setHistoryMenuAnchor] = useState<null | HTMLElement>(null);
+  const [historyMenuChatId, setHistoryMenuChatId] = useState<string | null>(null);
+
   const {
-    clearChat,
-    compressionEnabled,
+    canCreateBranchFromCurrentChat,
+    chatHistory,
+    createBranchFromCurrentChat,
+    createNewChat,
+    currentChatStrategy,
+    currentStrategy1WindowSize,
+    currentStrategy2WindowSize,
+    currentChatId,
+    deleteHistoryChat,
     errorMessage,
     inputValue,
     isLimitReached,
     isLoading,
     limitNotice,
-    lastResponseStats,
     messages,
+    model,
+    promptTokens,
+    completionTokens,
+    totalTokens,
     sendUserMessage,
-    setCompressionEnabled,
+    setCurrentChatStrategy,
+    setStrategy1WindowSize,
+    setStrategy2WindowSize,
     setInputValue,
-    statsItems,
+    switchToHistoryChat,
     totalCost,
     userMessageCount,
   } = useChat();
+
   const endOfMessagesRef = useRef<HTMLDivElement | null>(null);
+  const chatPaneHeight = { xs: '50vh', sm: '58vh', md: '62vh' };
 
   useEffect(() => {
     endOfMessagesRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [isLoading, messages, limitNotice]);
+
+  useEffect(() => {
+    setStrategy1WindowInput(String(currentStrategy1WindowSize));
+    setStrategy2WindowInput(String(currentStrategy2WindowSize));
+  }, [currentStrategy1WindowSize, currentStrategy2WindowSize, currentChatId]);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -51,6 +119,112 @@ export function SearchPage() {
     }
   };
 
+  const handleStrategyChange = (nextStrategy: ChatContextStrategy) => {
+    if (nextStrategy === currentChatStrategy) {
+      return;
+    }
+
+    if (messages.length === 0) {
+      setCurrentChatStrategy(nextStrategy);
+      return;
+    }
+
+    setPendingStrategy(nextStrategy);
+    setIsStrategyDialogOpen(true);
+  };
+
+  const handleStrategyConfirm = () => {
+    if (!pendingStrategy) {
+      setIsStrategyDialogOpen(false);
+      return;
+    }
+
+    createNewChat(pendingStrategy, { discardCurrentChat: true });
+    setPendingStrategy(null);
+    setIsStrategyDialogOpen(false);
+  };
+
+  const handleStrategyCancel = () => {
+    setPendingStrategy(null);
+    setIsStrategyDialogOpen(false);
+  };
+
+  const handleStrategy1WindowInputChange = (nextValue: string) => {
+    if (nextValue === '') {
+      setStrategy1WindowInput(nextValue);
+      return;
+    }
+
+    if (!/^\d+$/.test(nextValue)) {
+      return;
+    }
+
+    setStrategy1WindowInput(nextValue);
+    const parsed = Number(nextValue);
+    if (Number.isInteger(parsed) && parsed > 0) {
+      setStrategy1WindowSize(parsed);
+    }
+  };
+
+  const handleStrategy1WindowBlur = () => {
+    const parsed = Number(strategy1WindowInput);
+    if (!Number.isInteger(parsed) || parsed <= 0) {
+      setStrategy1WindowInput(String(currentStrategy1WindowSize));
+      return;
+    }
+
+    setStrategy1WindowSize(parsed);
+    setStrategy1WindowInput(String(parsed));
+  };
+
+  const handleStrategy2WindowInputChange = (nextValue: string) => {
+    if (nextValue === '') {
+      setStrategy2WindowInput(nextValue);
+      return;
+    }
+
+    if (!/^\d+$/.test(nextValue)) {
+      return;
+    }
+
+    setStrategy2WindowInput(nextValue);
+    const parsed = Number(nextValue);
+    if (Number.isInteger(parsed) && parsed >= 0) {
+      setStrategy2WindowSize(parsed);
+    }
+  };
+
+  const handleStrategy2WindowBlur = () => {
+    const parsed = Number(strategy2WindowInput);
+    if (!Number.isInteger(parsed) || parsed < 0) {
+      setStrategy2WindowInput(String(currentStrategy2WindowSize));
+      return;
+    }
+
+    setStrategy2WindowSize(parsed);
+    setStrategy2WindowInput(String(parsed));
+  };
+
+  const handleOpenHistoryMenu = (event: MouseEvent<HTMLButtonElement>, chatId: string) => {
+    event.stopPropagation();
+    setHistoryMenuAnchor(event.currentTarget);
+    setHistoryMenuChatId(chatId);
+  };
+
+  const handleCloseHistoryMenu = () => {
+    setHistoryMenuAnchor(null);
+    setHistoryMenuChatId(null);
+  };
+
+  const handleDeleteHistoryChat = () => {
+    if (!historyMenuChatId) {
+      return;
+    }
+
+    deleteHistoryChat(historyMenuChatId);
+    handleCloseHistoryMenu();
+  };
+
   return (
     <PageContainer>
       <Stack spacing={2.5}>
@@ -58,16 +232,68 @@ export function SearchPage() {
           <Typography variant="h5" component="h1" fontWeight={700}>
             Чат
           </Typography>
-          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ xs: 'flex-start', sm: 'center' }}>
-            <FormControlLabel
-              control={<Switch checked={compressionEnabled} onChange={(event) => setCompressionEnabled(event.target.checked)} />}
-              label="Сжатие истории"
-            />
-            <Button variant="outlined" color="inherit" onClick={clearChat}>
-              Очистить чат
-            </Button>
-          </Stack>
+          <Button
+            variant="outlined"
+            color="inherit"
+            onClick={() => createNewChat()}
+            disabled={isLoading}
+            sx={{ alignSelf: { xs: 'flex-start', sm: 'center' } }}
+          >
+            Создать чат
+          </Button>
         </Stack>
+
+        <Accordion variant="outlined" disableGutters sx={{ width: '100%' }}>
+          <AccordionSummary expandIcon={<ExpandMoreIcon />} aria-controls="chat-settings-content" id="chat-settings-header">
+            <Typography variant="subtitle1" fontWeight={600}>
+              Настройки чата
+            </Typography>
+          </AccordionSummary>
+          <AccordionDetails>
+            <Stack spacing={1.5}>
+              <FormControl>
+                <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 0.5 }}>
+                  Стратегии
+                </Typography>
+                <RadioGroup value={currentChatStrategy} onChange={(_, value) => handleStrategyChange(value as ChatContextStrategy)}>
+                  <FormControlLabel value="strategy-1" control={<Radio />} label="Стратегия 1: Sliding Window" />
+                  <FormControlLabel value="strategy-2" control={<Radio />} label="Стратегия 2: Sticky Facts / Key-Value Memory" />
+                  <FormControlLabel value="strategy-3" control={<Radio />} label="Стратегия 3: Branching (ветки диалога)" />
+                </RadioGroup>
+              </FormControl>
+              <Box>
+                <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 0.75 }}>
+                  Настройки стратегии
+                </Typography>
+                {currentChatStrategy === 'strategy-1' ? (
+                  <TextField
+                    label="Последние N сообщений"
+                    value={strategy1WindowInput}
+                    onChange={(event) => handleStrategy1WindowInputChange(event.target.value)}
+                    onBlur={handleStrategy1WindowBlur}
+                    size="small"
+                    inputProps={{ inputMode: 'numeric', pattern: '[0-9]*', min: 1 }}
+                    helperText="Только положительные целые числа. По умолчанию: 10."
+                  />
+                ) : currentChatStrategy === 'strategy-2' ? (
+                  <TextField
+                    label="Последние N сообщений"
+                    value={strategy2WindowInput}
+                    onChange={(event) => handleStrategy2WindowInputChange(event.target.value)}
+                    onBlur={handleStrategy2WindowBlur}
+                    size="small"
+                    inputProps={{ inputMode: 'numeric', pattern: '[0-9]*', min: 0 }}
+                    helperText="Только целые неотрицательные числа. По умолчанию: 10."
+                  />
+                ) : (
+                  <Button variant="outlined" onClick={createBranchFromCurrentChat} disabled={!canCreateBranchFromCurrentChat}>
+                    Создать новую ветку из текущего чата
+                  </Button>
+                )}
+              </Box>
+            </Stack>
+          </AccordionDetails>
+        </Accordion>
 
         <Stack
           direction={{ xs: 'column', md: 'row' }}
@@ -76,20 +302,64 @@ export function SearchPage() {
             alignItems: 'stretch',
           }}
         >
-          <Stack spacing={2} sx={{ width: { xs: '100%', md: '33.33%' } }}>
-            <Paper variant="outlined" sx={{ p: 2, backgroundColor: '#f6faf9' }}>
-              <Stack spacing={1.25}>
+          <Stack spacing={2} sx={{ width: { xs: '100%', md: '33.33%' }, height: chatPaneHeight }}>
+            <Paper
+              variant="outlined"
+              sx={{
+                p: 2,
+                backgroundColor: '#fcfdfd',
+                height: '50%',
+                minHeight: 0,
+                overflowY: 'auto',
+              }}
+            >
+              <Stack spacing={0.5}>
                 <Typography variant="h6" component="h2" fontWeight={700}>
-                  Статистика
+                  Ваши чаты
                 </Typography>
-                <Typography variant="body2">Модель: {lastResponseStats.model ?? '—'}</Typography>
-                <Typography variant="body2">Токены запроса: {lastResponseStats.promptTokens}</Typography>
-                <Typography variant="body2">Токены ответа: {lastResponseStats.completionTokens}</Typography>
-                <Typography variant="body2">Токены всего: {lastResponseStats.totalTokens}</Typography>
-                <Typography variant="body2">
-                  Стоимость последнего запроса: {lastResponseStats.requestCost === null ? '—' : formatRubles(lastResponseStats.requestCost)}
-                </Typography>
-                <Typography variant="body2">Общая стоимость: {formatRubles(totalCost)}</Typography>
+                {chatHistory.length === 0 ? (
+                  <Typography variant="body2" color="text.secondary">
+                    История пока пуста.
+                  </Typography>
+                ) : null}
+
+                {chatHistory.map((chat) => (
+                  <Box
+                    key={chat.id}
+                    onClick={() => switchToHistoryChat(chat.id)}
+                    sx={{
+                      position: 'relative',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 0.5,
+                      px: 0.75,
+                      py: 0.25,
+                      borderRadius: 1,
+                      cursor: 'pointer',
+                      backgroundColor: chat.id === currentChatId ? '#e0e0e0' : 'transparent',
+                      '&:hover': {
+                        backgroundColor: chat.id === currentChatId ? '#d6d6d6' : 'action.hover',
+                      },
+                    }}
+                  >
+                    <Typography
+                      variant="caption"
+                      sx={{
+                        flexGrow: 1,
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                        color: chat.id === currentChatId ? '#424242' : 'text.primary',
+                        fontWeight: chat.id === currentChatId ? 700 : 500,
+                      }}
+                    >
+                      {formatHistoryTitle(chat)}
+                    </Typography>
+                    <IconButton size="small" sx={{ p: 0.35 }} onClick={(event) => handleOpenHistoryMenu(event, chat.id)}>
+                      <MoreHorizIcon fontSize="small" />
+                    </IconButton>
+                  </Box>
+                ))}
               </Stack>
             </Paper>
 
@@ -98,33 +368,22 @@ export function SearchPage() {
               sx={{
                 p: 2,
                 backgroundColor: '#fcfdfd',
-                minHeight: { xs: 220, md: 420 },
-                maxHeight: { xs: 320, md: 520 },
+                height: '50%',
+                minHeight: 0,
                 overflowY: 'auto',
               }}
             >
-              <Stack spacing={1.25}>
-                <Typography variant="h6" component="h2" fontWeight={700}>
-                  По ответам
-                </Typography>
-                {statsItems.length === 0 ? (
-                  <Typography variant="body2" color="text.secondary">
-                    Пока нет данных по ответам.
+                <Stack spacing={2}>
+                <Stack spacing={1.25}>
+                  <Typography variant="h6" component="h2" fontWeight={700}>
+                    Статистика
                   </Typography>
-                ) : null}
-                {statsItems.map((item, index) => (
-                  <Paper key={item.id} variant="outlined" sx={{ p: 1.25, backgroundColor: '#ffffff' }}>
-                    <Stack spacing={0.5}>
-                      <Typography variant="body2" fontWeight={600}>
-                        Ответ #{index + 1}
-                      </Typography>
-                      <Typography variant="body2">Токены запроса: {item.promptTokens}</Typography>
-                      <Typography variant="body2">Токены ответа: {item.completionTokens}</Typography>
-                      <Typography variant="body2">Токены всего: {item.totalTokens}</Typography>
-                      <Typography variant="body2">Стоимость: {formatRubles(item.requestCost)}</Typography>
-                    </Stack>
-                  </Paper>
-                ))}
+                  <Typography variant="body2">Токены запроса: {promptTokens}</Typography>
+                  <Typography variant="body2">Токены ответа: {completionTokens}</Typography>
+                  <Typography variant="body2">Токены всего: {totalTokens}</Typography>
+                  <Typography variant="body2">Общая стоимость: {formatRubles(totalCost)}</Typography>
+                  <Typography variant="body2">Модель (текущий чат): {model}</Typography>
+                </Stack>
               </Stack>
             </Paper>
           </Stack>
@@ -133,7 +392,7 @@ export function SearchPage() {
             <Paper
               variant="outlined"
               sx={{
-                height: { xs: '50vh', sm: '58vh', md: '62vh' },
+                height: chatPaneHeight,
                 p: 1.5,
                 overflowY: 'auto',
                 backgroundColor: '#fafcfc',
@@ -159,11 +418,11 @@ export function SearchPage() {
                         borderRadius: 2,
                         bgcolor: isUser ? 'primary.main' : 'grey.100',
                         color: isUser ? 'primary.contrastText' : 'text.primary',
-                        whiteSpace: 'pre-wrap',
+                        whiteSpace: isUser ? 'pre-wrap' : 'normal',
                         wordBreak: 'break-word',
                       }}
                     >
-                      <Typography variant="body2">{message.content}</Typography>
+                      {isUser ? <Typography variant="body2">{message.content}</Typography> : <MarkdownMessage content={message.content} />}
                     </Box>
                   );
                 })}
@@ -227,6 +486,27 @@ export function SearchPage() {
 
         {errorMessage ? <Alert severity="error">{errorMessage}</Alert> : null}
       </Stack>
+
+      <Menu anchorEl={historyMenuAnchor} open={Boolean(historyMenuAnchor)} onClose={handleCloseHistoryMenu}>
+        <MenuItem onClick={handleDeleteHistoryChat}>
+          <DeleteOutlineIcon fontSize="small" sx={{ mr: 1 }} />
+          Удалить
+        </MenuItem>
+      </Menu>
+
+      <Dialog open={isStrategyDialogOpen} onClose={handleStrategyCancel}>
+        <DialogContent>
+          <DialogContentText>
+            Изменение стратегии возможно только для пустого чата
+            <br />
+            Создать новый чат?
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleStrategyConfirm}>ok</Button>
+          <Button onClick={handleStrategyCancel}>cancel</Button>
+        </DialogActions>
+      </Dialog>
     </PageContainer>
   );
 }
