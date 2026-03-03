@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type MouseEvent } from 'react';
+import CloseIcon from '@mui/icons-material/Close';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import MoreHorizIcon from '@mui/icons-material/MoreHoriz';
@@ -10,6 +11,7 @@ import {
   Box,
   Button,
   CircularProgress,
+  Drawer,
   FormControl,
   FormControlLabel,
   IconButton,
@@ -18,6 +20,8 @@ import {
   Paper,
   Radio,
   RadioGroup,
+  Tab,
+  Tabs,
   Stack,
   TextField,
   Typography,
@@ -47,11 +51,15 @@ function formatHistoryTitle(chat: ChatSession): string {
   return compact.length > 42 ? `${compact.slice(0, 42)}...` : compact;
 }
 
+type MemoryTab = 'short-term' | 'working' | 'long-term';
+
 export function SearchPage() {
   const [strategy1WindowInput, setStrategy1WindowInput] = useState('10');
   const [strategy2WindowInput, setStrategy2WindowInput] = useState('10');
   const [historyMenuAnchor, setHistoryMenuAnchor] = useState<null | HTMLElement>(null);
   const [historyMenuChatId, setHistoryMenuChatId] = useState<string | null>(null);
+  const [isMemoryDrawerOpen, setIsMemoryDrawerOpen] = useState(false);
+  const [activeMemoryTab, setActiveMemoryTab] = useState<MemoryTab>('short-term');
 
   const {
     canCreateBranchFromCurrentChat,
@@ -72,7 +80,10 @@ export function SearchPage() {
     model,
     promptTokens,
     completionTokens,
+    clearLongTermMemory,
     totalTokens,
+    longTermMemory,
+    memoryErrorMessage,
     sendUserMessage,
     setCurrentChatStrategy,
     setStrategy1WindowSize,
@@ -81,6 +92,7 @@ export function SearchPage() {
     switchToHistoryChat,
     totalCost,
     userMessageCount,
+    workingMemory,
   } = useChat();
 
   const endOfMessagesRef = useRef<HTMLDivElement | null>(null);
@@ -198,6 +210,14 @@ export function SearchPage() {
     handleCloseHistoryMenu();
   };
 
+  const handleOpenMemoryDrawer = () => {
+    setIsMemoryDrawerOpen(true);
+  };
+
+  const handleCloseMemoryDrawer = () => {
+    setIsMemoryDrawerOpen(false);
+  };
+
   return (
     <PageContainer>
       <Stack spacing={2.5}>
@@ -205,15 +225,14 @@ export function SearchPage() {
           <Typography variant="h5" component="h1" fontWeight={700}>
             Чат
           </Typography>
-          <Button
-            variant="outlined"
-            color="inherit"
-            onClick={() => createNewChat()}
-            disabled={isLoading}
-            sx={{ alignSelf: { xs: 'flex-start', sm: 'center' } }}
-          >
-            Создать чат
-          </Button>
+          <Stack direction="row" spacing={1} sx={{ alignSelf: { xs: 'flex-start', sm: 'center' } }}>
+            <Button variant="outlined" color="inherit" onClick={handleOpenMemoryDrawer}>
+              Память
+            </Button>
+            <Button variant="outlined" color="inherit" onClick={() => createNewChat()} disabled={isLoading}>
+              Создать чат
+            </Button>
+          </Stack>
         </Stack>
 
         <Accordion variant="outlined" disableGutters sx={{ width: '100%' }}>
@@ -492,6 +511,126 @@ export function SearchPage() {
           Удалить
         </MenuItem>
       </Menu>
+
+      <Drawer
+        anchor="right"
+        open={isMemoryDrawerOpen}
+        onClose={handleCloseMemoryDrawer}
+        ModalProps={{ keepMounted: true }}
+        sx={{
+          '& .MuiDrawer-paper': {
+            width: { xs: '100vw', sm: '66.67vw' },
+            maxWidth: '100%',
+          },
+        }}
+      >
+        <Stack sx={{ height: '100%' }}>
+          <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ px: 2, py: 1.5 }}>
+            <Typography variant="h6" fontWeight={700}>
+              Память
+            </Typography>
+            <IconButton aria-label="Закрыть память" onClick={handleCloseMemoryDrawer}>
+              <CloseIcon />
+            </IconButton>
+          </Stack>
+
+          <Tabs
+            value={activeMemoryTab}
+            onChange={(_, value: MemoryTab) => setActiveMemoryTab(value)}
+            variant="fullWidth"
+            sx={{ px: 2 }}
+          >
+            <Tab value="short-term" label="краткосрочная" />
+            <Tab value="working" label="рабочая" />
+            <Tab value="long-term" label="долговременная" />
+          </Tabs>
+
+          <Box sx={{ flexGrow: 1, overflowY: 'auto', p: 2 }}>
+            {memoryErrorMessage ? (
+              <Alert severity="warning" sx={{ mb: 2, whiteSpace: 'pre-wrap' }}>
+                {memoryErrorMessage}
+              </Alert>
+            ) : null}
+
+            {activeMemoryTab === 'short-term' ? (
+              <Stack spacing={1.25}>
+                {messages.length === 0 ? (
+                  <Typography variant="body2" color="text.secondary">
+                    В текущем чате пока нет сообщений.
+                  </Typography>
+                ) : null}
+                {messages.map((message) => (
+                  <Box
+                    key={`memory-${message.id}`}
+                    sx={{
+                      borderLeft: '3px solid',
+                      borderColor: 'divider',
+                      pl: 1.25,
+                      py: 0.25,
+                    }}
+                  >
+                    <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                      <Typography component="span" variant="body2" fontWeight={700}>
+                        {message.role === 'user' ? 'Пользователь: ' : 'Ассистент: '}
+                      </Typography>
+                      {message.content}
+                    </Typography>
+                  </Box>
+                ))}
+              </Stack>
+            ) : null}
+
+            {activeMemoryTab === 'working' ? (
+              <Paper variant="outlined" sx={{ p: 1.5, bgcolor: '#fafcfc' }}>
+                <Typography
+                  component="pre"
+                  variant="body2"
+                  sx={{
+                    m: 0,
+                    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-word',
+                  }}
+                >
+                  {JSON.stringify(workingMemory ?? {}, null, 2)}
+                </Typography>
+              </Paper>
+            ) : null}
+
+            {activeMemoryTab === 'long-term' ? (
+              <Stack spacing={1.25}>
+                <Box sx={{ display: 'flex', justifyContent: 'flex-end' }}>
+                  <Button variant="outlined" color="inherit" onClick={clearLongTermMemory}>
+                    Очистить долговременную память
+                  </Button>
+                </Box>
+                {longTermMemory.length === 0 ? (
+                  <Typography variant="body2" color="text.secondary">
+                    Долговременная память пока пуста.
+                  </Typography>
+                ) : null}
+                {longTermMemory.map((item) => (
+                  <Paper
+                    key={item.id}
+                    variant="outlined"
+                    sx={{
+                      p: 1.5,
+                      borderColor: '#00acc1',
+                    }}
+                  >
+                    <Stack spacing={0.75}>
+                      <Typography variant="caption" sx={{ fontWeight: 700, color: 'text.secondary' }}>
+                        {item.kind} / confidence: {item.confidence.toFixed(2)}
+                      </Typography>
+                      <Typography variant="body2">{item.text}</Typography>
+                    </Stack>
+                  </Paper>
+                ))}
+              </Stack>
+            ) : null}
+          </Box>
+        </Stack>
+      </Drawer>
     </PageContainer>
   );
 }

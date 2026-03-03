@@ -3,9 +3,18 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { buildChatCompletionPayload } from '@/entities/chat/lib/buildPayload';
 import { buildContextByStrategy } from '@/entities/chat/lib/contextStrategies';
 import { LIMIT_REACHED_TEXT, USER_MESSAGE_LIMIT } from '@/entities/chat/lib/constants';
+import {
+  buildLongTermMemoryExtractionMessages,
+  buildWorkingMemoryExtractionMessages,
+  parseLongTermMemory,
+  parseWorkingMemory,
+  prependMemoryToContext,
+} from '@/entities/chat/lib/memoryService';
+import { loadLongTermMemory, resetLongTermMemory, saveLongTermMemory } from '@/entities/chat/lib/longTermMemoryStorage';
 import { createBranchedChatSession, createEmptyChatSession, initializeChatSessionsStateWithDiagnostics, prepareHistoryChat, saveChatSessionsState } from '@/entities/chat/lib/sessionStorage';
 import { getNextMessageId } from '@/entities/chat/lib/storage';
-import type { ChatContextStrategy, ChatMessage, ChatSession, Strategy2Facts } from '@/entities/chat/model/types';
+import { deleteWorkingMemoryForChat, loadWorkingMemoryByChat, saveWorkingMemoryByChat } from '@/entities/chat/lib/workingMemoryStorage';
+import type { ChatContextStrategy, ChatMessage, ChatSession, LongTermMemoryItem, Strategy2Facts, WorkingMemory } from '@/entities/chat/model/types';
 import type { ChatCompletionUsage } from '@/entities/chat-response/model/types';
 import { openAiProxyChatApi } from '@/shared/api/openAiProxyChatApi';
 import { env } from '@/shared/config/env';
@@ -287,6 +296,30 @@ function extractUsage(response: { usage?: ChatCompletionUsage }): ChatCompletion
   return usage;
 }
 
+function extractUsageSafe(response: { usage?: ChatCompletionUsage }): ChatCompletionUsage {
+  try {
+    return extractUsage(response);
+  } catch {
+    return createEmptyUsage();
+  }
+}
+
+function createEmptyUsage(): ChatCompletionUsage {
+  return {
+    prompt_tokens: 0,
+    completion_tokens: 0,
+    total_tokens: 0,
+  };
+}
+
+function addUsage(left: ChatCompletionUsage, right: ChatCompletionUsage): ChatCompletionUsage {
+  return {
+    prompt_tokens: left.prompt_tokens + right.prompt_tokens,
+    completion_tokens: left.completion_tokens + right.completion_tokens,
+    total_tokens: left.total_tokens + right.total_tokens,
+  };
+}
+
 function normalizeFactKey(value: string): string {
   return value.trim();
 }
@@ -387,12 +420,16 @@ export function useChat() {
   const [currentChat, setCurrentChat] = useState<ChatSession>(initialSessionsState.currentChat);
   const [chatHistory, setChatHistory] = useState<ChatSession[]>(initialSessionsState.chatHistory);
   const [statsState, setStatsState] = useState<ChatStatsState>(() => initializeChatStats(initialSessionsState.currentChat.id));
+  const [workingMemoryByChat, setWorkingMemoryByChat] = useState<Record<string, WorkingMemory>>(() => loadWorkingMemoryByChat());
+  const [longTermMemory, setLongTermMemory] = useState<LongTermMemoryItem[]>(() => loadLongTermMemory());
   const [status, setStatus] = useState<RequestStatus>('idle');
+  const [memoryErrorMessage, setMemoryErrorMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(
     initialSessionsStateDiagnostics.hasChatsWithoutStrategy ? CHAT_WITHOUT_STRATEGY_ERROR : null,
   );
 
   const messages = currentChat.messages;
+  const currentWorkingMemory = workingMemoryByChat[currentChat.id] ?? null;
   const currentChatStats = useMemo(() => getChatStats(statsState, currentChat.id), [currentChat.id, statsState]);
 
   const userMessageCount = useMemo(() => countUserMessages(messages), [messages]);
@@ -406,6 +443,16 @@ export function useChat() {
     });
     setCurrentChat(nextCurrentChat);
     setChatHistory(nextChatHistory);
+  }, []);
+
+  const persistWorkingMemoryByChat = useCallback((nextMemoryMap: Record<string, WorkingMemory>) => {
+    saveWorkingMemoryByChat(nextMemoryMap);
+    setWorkingMemoryByChat(nextMemoryMap);
+  }, []);
+
+  const persistLongTermMemory = useCallback((nextLongTermMemory: LongTermMemoryItem[]) => {
+    saveLongTermMemory(nextLongTermMemory);
+    setLongTermMemory(nextLongTermMemory);
   }, []);
 
   const refreshInitialBalance = useCallback(async () => {
@@ -454,6 +501,7 @@ export function useChat() {
     setInputValue('');
     setStatus('loading');
     setErrorMessage(null);
+    setMemoryErrorMessage(null);
 
     try {
       const balanceBefore = await (statsState.previousBalance === null
@@ -461,6 +509,7 @@ export function useChat() {
             throw new Error('Баланс не получен.');
           })
         : Promise.resolve(statsState.previousBalance));
+      let accumulatedUsage = createEmptyUsage();
 
       let chatForRequest = currentWithUserMessage;
       if (currentWithUserMessage.contextStrategy === 'strategy-2') {
@@ -480,19 +529,61 @@ export function useChat() {
         persistSessions(chatForRequest, nextHistoryState);
       }
 
+      let nextWorkingMemory = currentWorkingMemory;
+      try {
+        const workingMemoryPayload = buildChatCompletionPayload(
+          buildWorkingMemoryExtractionMessages(chatForRequest.messages, currentWorkingMemory),
+          env.llmModelMain,
+        );
+        const workingMemoryResponse = await openAiProxyChatApi.createChatCompletion(workingMemoryPayload);
+        const workingMemoryText = extractAssistantText(workingMemoryResponse);
+        const parsedWorkingMemory = parseWorkingMemory(workingMemoryText);
+        const workingMemoryByChatNext = {
+          ...workingMemoryByChat,
+          [chatForRequest.id]: parsedWorkingMemory,
+        };
+        nextWorkingMemory = parsedWorkingMemory;
+        persistWorkingMemoryByChat(workingMemoryByChatNext);
+        accumulatedUsage = addUsage(accumulatedUsage, extractUsageSafe(workingMemoryResponse));
+      } catch (error: unknown) {
+        const normalized = normalizeError(error);
+        console.error('[memory] working memory extraction failed', error);
+        setMemoryErrorMessage(`Рабочая память: ${normalized}`);
+      }
+
+      let nextLongTermMemory = longTermMemory;
+      try {
+        const longTermPayload = buildChatCompletionPayload(
+          buildLongTermMemoryExtractionMessages(chatForRequest.messages, longTermMemory),
+          env.llmModelMain,
+        );
+        const longTermResponse = await openAiProxyChatApi.createChatCompletion(longTermPayload);
+        const longTermText = extractAssistantText(longTermResponse);
+        const parsedLongTermMemory = parseLongTermMemory(longTermText);
+        nextLongTermMemory = parsedLongTermMemory;
+        persistLongTermMemory(parsedLongTermMemory);
+        accumulatedUsage = addUsage(accumulatedUsage, extractUsageSafe(longTermResponse));
+      } catch (error: unknown) {
+        const normalized = normalizeError(error);
+        console.error('[memory] long-term memory extraction failed', error);
+        setMemoryErrorMessage((previous) => (previous ? `${previous}\nДолговременная память: ${normalized}` : `Долговременная память: ${normalized}`));
+      }
+
       const contextMessages = buildContextByStrategy(
         chatForRequest.contextStrategy,
         chatForRequest.messages,
         chatForRequest.strategySettings,
       );
+      const contextWithMemory = prependMemoryToContext(contextMessages, nextWorkingMemory, nextLongTermMemory);
       console.info(
-        `[context] strategy=${chatForRequest.contextStrategy}, strategy1WindowSize=${chatForRequest.strategySettings.strategy1WindowSize}, strategy2WindowSize=${chatForRequest.strategySettings.strategy2WindowSize}, strategy2Facts=${Object.keys(chatForRequest.strategySettings.strategy2Facts).length}, rawMessages=${chatForRequest.messages.length}, contextMessages=${contextMessages.length}`,
+        `[context] strategy=${chatForRequest.contextStrategy}, strategy1WindowSize=${chatForRequest.strategySettings.strategy1WindowSize}, strategy2WindowSize=${chatForRequest.strategySettings.strategy2WindowSize}, strategy2Facts=${Object.keys(chatForRequest.strategySettings.strategy2Facts).length}, rawMessages=${chatForRequest.messages.length}, contextMessages=${contextWithMemory.length}`,
       );
 
-      const payload = buildChatCompletionPayload(contextMessages, env.llmModelMain);
+      const payload = buildChatCompletionPayload(contextWithMemory, env.llmModelMain);
       const response = await openAiProxyChatApi.createChatCompletion(payload);
       const assistantText = extractAssistantText(response);
       const usage = extractUsage(response);
+      accumulatedUsage = addUsage(accumulatedUsage, usage);
       const balanceAfter = await openAiProxyChatApi.getBalance().catch(() => {
         throw new Error('Баланс не получен.');
       });
@@ -524,9 +615,9 @@ export function useChat() {
             ...getChatStats(statsState, updatedCurrentChat.id),
             model: payload.model,
             totalCost: getChatStats(statsState, updatedCurrentChat.id).totalCost + requestCost,
-            promptTokens: getChatStats(statsState, updatedCurrentChat.id).promptTokens + usage.prompt_tokens,
-            completionTokens: getChatStats(statsState, updatedCurrentChat.id).completionTokens + usage.completion_tokens,
-            totalTokens: getChatStats(statsState, updatedCurrentChat.id).totalTokens + usage.total_tokens,
+            promptTokens: getChatStats(statsState, updatedCurrentChat.id).promptTokens + accumulatedUsage.prompt_tokens,
+            completionTokens: getChatStats(statsState, updatedCurrentChat.id).completionTokens + accumulatedUsage.completion_tokens,
+            totalTokens: getChatStats(statsState, updatedCurrentChat.id).totalTokens + accumulatedUsage.total_tokens,
           },
         },
       };
@@ -540,12 +631,17 @@ export function useChat() {
   }, [
     chatHistory,
     currentChat,
+    currentWorkingMemory,
     inputValue,
     isLimitReached,
+    longTermMemory,
     messages,
+    persistLongTermMemory,
     persistSessions,
+    persistWorkingMemoryByChat,
     statsState,
     status,
+    workingMemoryByChat,
   ]);
 
   const createNewChat = useCallback(
@@ -568,10 +664,16 @@ export function useChat() {
           saveChatStats(nextStatsState);
           return nextStatsState;
         });
+        setWorkingMemoryByChat((previousState) => {
+          const nextMemoryMap = deleteWorkingMemoryForChat(previousState, currentChat.id);
+          saveWorkingMemoryByChat(nextMemoryMap);
+          return nextMemoryMap;
+        });
       }
       setInputValue('');
       setStatus('idle');
       setErrorMessage(null);
+      setMemoryErrorMessage(null);
     },
     [chatHistory, currentChat, persistSessions, status],
   );
@@ -589,6 +691,7 @@ export function useChat() {
     setInputValue('');
     setStatus('idle');
     setErrorMessage(null);
+    setMemoryErrorMessage(null);
     return true;
   }, [chatHistory, currentChat, persistSessions, status]);
 
@@ -692,6 +795,7 @@ export function useChat() {
       setInputValue('');
       setStatus('idle');
       setErrorMessage(null);
+      setMemoryErrorMessage(null);
     },
     [chatHistory, currentChat, persistSessions, status],
   );
@@ -710,9 +814,15 @@ export function useChat() {
           saveChatStats(nextStatsState);
           return nextStatsState;
         });
+        setWorkingMemoryByChat((previousState) => {
+          const nextMemoryMap = deleteWorkingMemoryForChat(previousState, chatId);
+          saveWorkingMemoryByChat(nextMemoryMap);
+          return nextMemoryMap;
+        });
         setInputValue('');
         setStatus('idle');
         setErrorMessage(null);
+        setMemoryErrorMessage(null);
         return;
       }
 
@@ -721,6 +831,11 @@ export function useChat() {
         const nextStatsState = removeChatStats(previousState, chatId);
         saveChatStats(nextStatsState);
         return nextStatsState;
+      });
+      setWorkingMemoryByChat((previousState) => {
+        const nextMemoryMap = deleteWorkingMemoryForChat(previousState, chatId);
+        saveWorkingMemoryByChat(nextMemoryMap);
+        return nextMemoryMap;
       });
     },
     [chatHistory, currentChat, persistSessions],
@@ -736,9 +851,15 @@ export function useChat() {
       saveChatStats(nextStatsState);
       return nextStatsState;
     });
+    setWorkingMemoryByChat((previousState) => {
+      const nextMemoryMap = deleteWorkingMemoryForChat(previousState, currentChat.id);
+      saveWorkingMemoryByChat(nextMemoryMap);
+      return nextMemoryMap;
+    });
     setInputValue('');
     setStatus('idle');
     setErrorMessage(null);
+    setMemoryErrorMessage(null);
 
     void refreshInitialBalance().catch(() => {
       setStatus('error');
@@ -746,9 +867,16 @@ export function useChat() {
     });
   }, [chatHistory, currentChat.id, persistSessions, refreshInitialBalance]);
 
+  const clearLongTermMemoryState = useCallback(() => {
+    const resetItems = resetLongTermMemory();
+    setLongTermMemory(resetItems);
+    setMemoryErrorMessage(null);
+  }, []);
+
   return {
     canCreateBranchFromCurrentChat: status !== 'loading' && currentChat.contextStrategy === 'strategy-3' && !isChatEmpty(currentChat),
     clearChat,
+    clearLongTermMemory: clearLongTermMemoryState,
     chatHistory,
     createBranchFromCurrentChat,
     createNewChat,
@@ -767,6 +895,9 @@ export function useChat() {
     promptTokens: currentChatStats.promptTokens,
     completionTokens: currentChatStats.completionTokens,
     totalTokens: currentChatStats.totalTokens,
+    longTermMemory,
+    memoryErrorMessage,
+    workingMemory: currentWorkingMemory,
     setCurrentChatStrategy,
     setStrategy1WindowSize,
     setStrategy2WindowSize,

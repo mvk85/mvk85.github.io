@@ -28,6 +28,33 @@ export type ChatContextStrategy = 'strategy-1' | 'strategy-2' | 'strategy-3';
 
 export type Strategy2Facts = Record<string, string>;
 
+export type WorkingMemoryTaskStatus = 'todo' | 'in_progress' | 'done' | 'blocked';
+
+export type WorkingMemoryTask = {
+  id: string;
+  title: string;
+  status: WorkingMemoryTaskStatus;
+  notes?: string;
+};
+
+export type WorkingMemory = {
+  goal: string | null;
+  tasks: WorkingMemoryTask[];
+  current_focus: string | null;
+  constraints: string[];
+  updated_at: string;
+};
+
+export type LongTermMemoryKind = 'profile' | 'preference' | 'knowledge' | 'decision';
+
+export type LongTermMemoryItem = {
+  id: string;
+  kind: LongTermMemoryKind;
+  text: string;
+  confidence: number;
+  updated_at: string;
+};
+
 export type ChatStrategySettings = {
   strategy1WindowSize: number;
   strategy2WindowSize: number;
