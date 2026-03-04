@@ -20,11 +20,14 @@ import {
   Paper,
   Radio,
   RadioGroup,
+  Select,
+  type SelectChangeEvent,
   Tab,
   Tabs,
   Stack,
   TextField,
   Typography,
+  InputLabel,
 } from '@mui/material';
 
 import type { ChatContextStrategy, ChatSession } from '@/entities/chat/model/types';
@@ -32,6 +35,7 @@ import { USER_MESSAGE_LIMIT } from '@/entities/chat/lib/constants';
 import { MarkdownMessage } from '@/entities/chat-response/ui/MarkdownMessage';
 import { useChat } from '@/features/chat/model/useChat';
 import { PageContainer } from '@/shared/ui/PageContainer';
+import { USER_PROFILE_OPTIONS } from '@/entities/profile/lib/profileConfig';
 
 function formatRubles(value: number): string {
   return `${value.toFixed(6).replace('.', ',')} ₽`;
@@ -67,6 +71,7 @@ export function SearchPage() {
     createBranchFromCurrentChat,
     createNewChat,
     currentChatStrategy,
+    currentChatProfile,
     currentStrategy1WindowSize,
     currentStrategy2WindowSize,
     currentChatId,
@@ -86,6 +91,7 @@ export function SearchPage() {
     memoryErrorMessage,
     sendUserMessage,
     setCurrentChatStrategy,
+    setCurrentChatProfile,
     setStrategy1WindowSize,
     setStrategy2WindowSize,
     setInputValue,
@@ -132,6 +138,10 @@ export function SearchPage() {
     }
 
     setCurrentChatStrategy(nextStrategy);
+  };
+
+  const handleProfileChange = (event: SelectChangeEvent) => {
+    setCurrentChatProfile(event.target.value as typeof currentChatProfile);
   };
 
   const handleStrategy1WindowInputChange = (nextValue: string) => {
@@ -243,6 +253,26 @@ export function SearchPage() {
           </AccordionSummary>
           <AccordionDetails>
             <Stack spacing={1.5}>
+              <FormControl>
+                <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 0.5 }}>
+                  Профиль
+                </Typography>
+                <FormControl size="small" disabled={!isCurrentChatEmpty || isLoading}>
+                  <InputLabel id="chat-profile-select-label">Профиль пользователя</InputLabel>
+                  <Select
+                    labelId="chat-profile-select-label"
+                    label="Профиль пользователя"
+                    value={currentChatProfile}
+                    onChange={handleProfileChange}
+                  >
+                    {USER_PROFILE_OPTIONS.map((option) => (
+                      <MenuItem key={option.id} value={option.id}>
+                        {option.label}
+                      </MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
+              </FormControl>
               <FormControl>
                 <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 0.5 }}>
                   Стратегии

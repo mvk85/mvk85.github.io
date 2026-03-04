@@ -42,6 +42,7 @@ describe('chat strategy storage', () => {
   it('по умолчанию новый чат создается с strategy-1 и window=10', () => {
     const chat = createEmptyChatSession();
 
+    expect(chat.profileId).toBe('none');
     expect(chat.contextStrategy).toBe('strategy-1');
     expect(chat.parentChatId).toBeNull();
     expect(chat.strategySettings.strategy1WindowSize).toBe(10);
@@ -50,8 +51,9 @@ describe('chat strategy storage', () => {
   });
 
   it('стратегия сохраняется при явном создании чата', () => {
-    const chat = createChatSession({ contextStrategy: 'strategy-3' });
+    const chat = createChatSession({ contextStrategy: 'strategy-3', profileId: 'fullstack_programmer' });
 
+    expect(chat.profileId).toBe('fullstack_programmer');
     expect(chat.contextStrategy).toBe('strategy-3');
     expect(chat.parentChatId).toBeNull();
     expect(chat.strategySettings.strategy1WindowSize).toBe(10);
@@ -107,6 +109,7 @@ describe('chat strategy storage', () => {
       id: 'chat-parent',
       title: 'План проекта',
       contextStrategy: 'strategy-3',
+      profileId: 'fullstack_programmer',
       messages: [
         { id: 1, role: 'user', content: 'Собери требования' },
         { id: 2, role: 'assistant', content: 'Готово' },
@@ -124,6 +127,7 @@ describe('chat strategy storage', () => {
 
     expect(firstBranch.id).not.toBe(parent.id);
     expect(firstBranch.parentChatId).toBe(parent.id);
+    expect(firstBranch.profileId).toBe('fullstack_programmer');
     expect(firstBranch.title).toBe('План проекта_ветка_1');
     expect(firstBranch.contextStrategy).toBe(parent.contextStrategy);
     expect(firstBranch.messages).toEqual(parent.messages);

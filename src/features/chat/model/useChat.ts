@@ -19,6 +19,8 @@ import type { ChatCompletionUsage } from '@/entities/chat-response/model/types';
 import { openAiProxyChatApi } from '@/shared/api/openAiProxyChatApi';
 import { env } from '@/shared/config/env';
 import { normalizeError } from '@/shared/lib/errors';
+import { prependUserProfileToContext } from '@/entities/profile/lib/profilePrompt';
+import type { UserProfileId } from '@/entities/profile/model/types';
 
 type RequestStatus = 'idle' | 'loading' | 'success' | 'error';
 const CHAT_STATS_STORAGE_KEY = 'chat_stats_v1';
@@ -575,11 +577,12 @@ export function useChat() {
         chatForRequest.strategySettings,
       );
       const contextWithMemory = prependMemoryToContext(contextMessages, nextWorkingMemory, nextLongTermMemory);
+      const contextWithProfile = prependUserProfileToContext(contextWithMemory, chatForRequest.profileId);
       console.info(
-        `[context] strategy=${chatForRequest.contextStrategy}, strategy1WindowSize=${chatForRequest.strategySettings.strategy1WindowSize}, strategy2WindowSize=${chatForRequest.strategySettings.strategy2WindowSize}, strategy2Facts=${Object.keys(chatForRequest.strategySettings.strategy2Facts).length}, rawMessages=${chatForRequest.messages.length}, contextMessages=${contextWithMemory.length}`,
+        `[context] strategy=${chatForRequest.contextStrategy}, strategy1WindowSize=${chatForRequest.strategySettings.strategy1WindowSize}, strategy2WindowSize=${chatForRequest.strategySettings.strategy2WindowSize}, strategy2Facts=${Object.keys(chatForRequest.strategySettings.strategy2Facts).length}, rawMessages=${chatForRequest.messages.length}, contextMessages=${contextWithProfile.length}, profile=${chatForRequest.profileId}`,
       );
 
-      const payload = buildChatCompletionPayload(contextWithMemory, env.llmModelMain);
+      const payload = buildChatCompletionPayload(contextWithProfile, env.llmModelMain);
       const response = await openAiProxyChatApi.createChatCompletion(payload);
       const assistantText = extractAssistantText(response);
       const usage = extractUsage(response);
@@ -704,6 +707,23 @@ export function useChat() {
       const nextCurrentChat: ChatSession = {
         ...currentChat,
         contextStrategy,
+      };
+
+      persistSessions(nextCurrentChat, chatHistory);
+      return true;
+    },
+    [chatHistory, currentChat, persistSessions, status],
+  );
+
+  const setCurrentChatProfile = useCallback(
+    (profileId: UserProfileId) => {
+      if (status === 'loading' || !isChatEmpty(currentChat) || currentChat.profileId === profileId) {
+        return false;
+      }
+
+      const nextCurrentChat: ChatSession = {
+        ...currentChat,
+        profileId,
       };
 
       persistSessions(nextCurrentChat, chatHistory);
@@ -881,6 +901,7 @@ export function useChat() {
     createBranchFromCurrentChat,
     createNewChat,
     currentChatStrategy: currentChat.contextStrategy,
+    currentChatProfile: currentChat.profileId,
     currentStrategy1WindowSize: currentChat.strategySettings.strategy1WindowSize,
     currentStrategy2WindowSize: currentChat.strategySettings.strategy2WindowSize,
     currentChatId: currentChat.id,
@@ -899,6 +920,7 @@ export function useChat() {
     memoryErrorMessage,
     workingMemory: currentWorkingMemory,
     setCurrentChatStrategy,
+    setCurrentChatProfile,
     setStrategy1WindowSize,
     setStrategy2WindowSize,
     setInputValue,

@@ -2,6 +2,8 @@ import { CHAT_SESSIONS_STORAGE_KEY } from '@/entities/chat/lib/constants';
 import { loadChatMessages } from '@/entities/chat/lib/storage';
 import { createEmptySummaryState, loadChatSummaryState } from '@/entities/chat/lib/summaryStorage';
 import type { ChatContextStrategy, ChatMessage, ChatSession, ChatSessionsState, ChatSummaryState, ChatStrategySettings } from '@/entities/chat/model/types';
+import { DEFAULT_USER_PROFILE_ID, isValidUserProfileId } from '@/entities/profile/lib/profileConfig';
+import type { UserProfileId } from '@/entities/profile/model/types';
 
 const DEFAULT_STRATEGY_1_WINDOW_SIZE = 10;
 const DEFAULT_STRATEGY_2_WINDOW_SIZE = 10;
@@ -10,6 +12,7 @@ type StoredChatSession = {
   id?: unknown;
   createdAt?: unknown;
   parentChatId?: unknown;
+  profileId?: unknown;
   title?: unknown;
   messages?: unknown;
   summaryState?: unknown;
@@ -179,6 +182,7 @@ export function createChatSession(params?: {
   id?: string;
   createdAt?: string;
   parentChatId?: string | null;
+  profileId?: UserProfileId;
   title?: string;
   messages?: ChatMessage[];
   summaryState?: ChatSummaryState;
@@ -191,6 +195,7 @@ export function createChatSession(params?: {
     id: params?.id ?? createSessionId(),
     createdAt: params?.createdAt ?? new Date().toISOString(),
     parentChatId: typeof params?.parentChatId === 'string' ? params.parentChatId : null,
+    profileId: params?.profileId ?? DEFAULT_USER_PROFILE_ID,
     title: params?.title,
     messages,
     summaryState: params?.summaryState ?? createEmptySummaryState(),
@@ -246,6 +251,7 @@ function normalizeChatSession(value: unknown): NormalizeChatSessionResult {
       id: candidate.id,
       createdAt: candidate.createdAt,
       parentChatId: typeof candidate.parentChatId === 'string' ? candidate.parentChatId : null,
+      profileId: isValidUserProfileId(candidate.profileId) ? candidate.profileId : DEFAULT_USER_PROFILE_ID,
       title: typeof candidate.title === 'string' ? candidate.title : normalizeChatTitle(normalizedMessages),
       messages: normalizedMessages,
       summaryState: normalizeSummaryState(candidate.summaryState),
@@ -272,6 +278,7 @@ export function createBranchedChatSession(parentChat: ChatSession, allChats: Cha
   return createChatSession({
     parentChatId: parentChat.id,
     title: `${baseTitle}_ветка_${branchNumber}`,
+    profileId: parentChat.profileId,
     messages: branchMessages,
     summaryState: {
       ...parentChat.summaryState,

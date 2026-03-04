@@ -1,3 +1,5 @@
+import type { UserProfileId } from '@/entities/profile/model/types';
+
 export type ChatMessageRole = 'user' | 'assistant';
 
 export type ChatMessage = {
@@ -65,6 +67,7 @@ export type ChatSession = {
   id: string;
   createdAt: string;
   parentChatId: string | null;
+  profileId: UserProfileId;
   messages: ChatMessage[];
   summaryState: ChatSummaryState;
   contextStrategy: ChatContextStrategy;
