@@ -1,7 +1,22 @@
 import { CHAT_SESSIONS_STORAGE_KEY } from '@/entities/chat/lib/constants';
 import { loadChatMessages } from '@/entities/chat/lib/storage';
 import { createEmptySummaryState, loadChatSummaryState } from '@/entities/chat/lib/summaryStorage';
-import type { ChatContextStrategy, ChatMessage, ChatSession, ChatSessionsState, ChatSummaryState, ChatStrategySettings } from '@/entities/chat/model/types';
+import {
+  createFrontendPromptInitialTaskState,
+  isTaskEnabled,
+  isValidChatTaskId,
+} from '@/entities/chat/lib/taskConfig';
+import type {
+  ChatContextStrategy,
+  ChatMessage,
+  ChatSession,
+  ChatSessionsState,
+  ChatSummaryState,
+  ChatStrategySettings,
+  ChatTaskId,
+  ChatTaskState,
+  FrontendPromptTaskState,
+} from '@/entities/chat/model/types';
 import { DEFAULT_USER_PROFILE_ID, isValidUserProfileId } from '@/entities/profile/lib/profileConfig';
 import type { UserProfileId } from '@/entities/profile/model/types';
 
@@ -13,6 +28,8 @@ type StoredChatSession = {
   createdAt?: unknown;
   parentChatId?: unknown;
   profileId?: unknown;
+  taskId?: unknown;
+  taskState?: unknown;
   title?: unknown;
   messages?: unknown;
   summaryState?: unknown;
@@ -126,6 +143,99 @@ function normalizeSummaryState(value: unknown): ChatSummaryState {
   };
 }
 
+function isValidTaskStage(value: unknown): value is FrontendPromptTaskState['stage'] {
+  return value === 'planning' || value === 'execution' || value === 'validation' || value === 'done';
+}
+
+function normalizeTaskState(value: unknown, taskId: Exclude<ChatTaskId, 'none'>): ChatTaskState {
+  if (taskId !== 'frontend_app_prompt') {
+    return createFrontendPromptInitialTaskState();
+  }
+
+  if (typeof value !== 'object' || value === null) {
+    return createFrontendPromptInitialTaskState();
+  }
+
+  const candidate = value as Partial<FrontendPromptTaskState>;
+  if (candidate.taskId !== 'frontend_app_prompt' || !isValidTaskStage(candidate.stage) || !Array.isArray(candidate.planningQuestions)) {
+    return createFrontendPromptInitialTaskState();
+  }
+
+  const planningQuestions = candidate.planningQuestions
+    .map((question) => {
+      if (typeof question !== 'object' || question === null) {
+        return null;
+      }
+      const normalized = question as Partial<{ id: unknown; text: unknown }>;
+      if (typeof normalized.id !== 'string' || normalized.id.trim().length === 0 || typeof normalized.text !== 'string' || normalized.text.trim().length === 0) {
+        return null;
+      }
+      return {
+        id: normalized.id,
+        text: normalized.text,
+      };
+    })
+    .filter((question): question is { id: string; text: string } => Boolean(question));
+
+  const planningAnswersSource =
+    typeof candidate.planningAnswers === 'object' && candidate.planningAnswers !== null && !Array.isArray(candidate.planningAnswers)
+      ? candidate.planningAnswers
+      : {};
+  const planningAnswers = Object.entries(planningAnswersSource as Record<string, unknown>).reduce<Record<string, string>>((accumulator, [key, rawValue]) => {
+    if (typeof rawValue !== 'string' || key.trim().length === 0 || rawValue.trim().length === 0) {
+      return accumulator;
+    }
+    accumulator[key] = rawValue.trim();
+    return accumulator;
+  }, {});
+
+  const validationResult =
+    typeof candidate.validationResult === 'object' && candidate.validationResult !== null && !Array.isArray(candidate.validationResult)
+      ? candidate.validationResult
+      : null;
+  let normalizedValidationResult: FrontendPromptTaskState['validationResult'] = null;
+  if (validationResult) {
+    const validationCandidate = validationResult as Record<string, unknown>;
+    const status =
+      validationCandidate.status === 'approved' || validationCandidate.status === 'needs_revision' ? validationCandidate.status : null;
+    const reviewSummary = typeof validationCandidate.reviewSummary === 'string' ? validationCandidate.reviewSummary.trim() : '';
+
+    if (status && reviewSummary.length > 0) {
+      normalizedValidationResult = {
+        status,
+        reviewSummary,
+        issues: Array.isArray(validationCandidate.issues)
+          ? validationCandidate.issues.filter((issue): issue is string => typeof issue === 'string' && issue.trim().length > 0)
+          : [],
+        clarificationQuestions: Array.isArray(validationCandidate.clarificationQuestions)
+          ? validationCandidate.clarificationQuestions.filter(
+              (question): question is string => typeof question === 'string' && question.trim().length > 0,
+            )
+          : [],
+        reviewedAt: typeof validationCandidate.reviewedAt === 'string' ? validationCandidate.reviewedAt : new Date().toISOString(),
+      };
+    }
+  }
+
+  return {
+    taskId: 'frontend_app_prompt',
+    stage: candidate.stage,
+    currentStep: typeof candidate.currentStep === 'string' ? candidate.currentStep : 'Сбор вводных по новому фронтенд приложению.',
+    expectedAction:
+      typeof candidate.expectedAction === 'string'
+        ? candidate.expectedAction
+        : 'Ответьте на все вопросы planning (можно частями в нескольких сообщениях).',
+    planningQuestions: planningQuestions.length > 0 ? planningQuestions : createFrontendPromptInitialTaskState().planningQuestions,
+    planningAnswers,
+    lastGeneratedPrompt: typeof candidate.lastGeneratedPrompt === 'string' ? candidate.lastGeneratedPrompt : null,
+    validationResult: normalizedValidationResult,
+    revisionRequest: typeof candidate.revisionRequest === 'string' ? candidate.revisionRequest : null,
+    createdAt: typeof candidate.createdAt === 'string' ? candidate.createdAt : new Date().toISOString(),
+    updatedAt: typeof candidate.updatedAt === 'string' ? candidate.updatedAt : new Date().toISOString(),
+    version: typeof candidate.version === 'number' && Number.isInteger(candidate.version) && candidate.version > 0 ? candidate.version : 1,
+  };
+}
+
 function createSessionId(): string {
   return `chat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -183,6 +293,8 @@ export function createChatSession(params?: {
   createdAt?: string;
   parentChatId?: string | null;
   profileId?: UserProfileId;
+  taskId?: ChatTaskId;
+  taskState?: ChatTaskState | null;
   title?: string;
   messages?: ChatMessage[];
   summaryState?: ChatSummaryState;
@@ -196,6 +308,11 @@ export function createChatSession(params?: {
     createdAt: params?.createdAt ?? new Date().toISOString(),
     parentChatId: typeof params?.parentChatId === 'string' ? params.parentChatId : null,
     profileId: params?.profileId ?? DEFAULT_USER_PROFILE_ID,
+    taskId: params?.taskId ?? 'none',
+    taskState:
+      params?.taskId && isTaskEnabled(params.taskId)
+        ? params?.taskState ?? createFrontendPromptInitialTaskState()
+        : null,
     title: params?.title,
     messages,
     summaryState: params?.summaryState ?? createEmptySummaryState(),
@@ -246,12 +363,17 @@ function normalizeChatSession(value: unknown): NormalizeChatSessionResult {
     }
   }
 
+  const taskId = isValidChatTaskId(candidate.taskId) ? candidate.taskId : 'none';
+  const taskState = isTaskEnabled(taskId) ? normalizeTaskState(candidate.taskState, taskId) : null;
+
   return {
     chat: {
       id: candidate.id,
       createdAt: candidate.createdAt,
       parentChatId: typeof candidate.parentChatId === 'string' ? candidate.parentChatId : null,
       profileId: isValidUserProfileId(candidate.profileId) ? candidate.profileId : DEFAULT_USER_PROFILE_ID,
+      taskId,
+      taskState,
       title: typeof candidate.title === 'string' ? candidate.title : normalizeChatTitle(normalizedMessages),
       messages: normalizedMessages,
       summaryState: normalizeSummaryState(candidate.summaryState),
@@ -279,6 +401,21 @@ export function createBranchedChatSession(parentChat: ChatSession, allChats: Cha
     parentChatId: parentChat.id,
     title: `${baseTitle}_ветка_${branchNumber}`,
     profileId: parentChat.profileId,
+    taskId: parentChat.taskId,
+    taskState: parentChat.taskState
+      ? {
+          ...parentChat.taskState,
+          planningQuestions: parentChat.taskState.planningQuestions.map((question) => ({ ...question })),
+          planningAnswers: { ...parentChat.taskState.planningAnswers },
+          validationResult: parentChat.taskState.validationResult
+            ? {
+                ...parentChat.taskState.validationResult,
+                issues: [...parentChat.taskState.validationResult.issues],
+                clarificationQuestions: [...parentChat.taskState.validationResult.clarificationQuestions],
+              }
+            : null,
+        }
+      : null,
     messages: branchMessages,
     summaryState: {
       ...parentChat.summaryState,

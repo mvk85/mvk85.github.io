@@ -32,6 +32,7 @@ import {
 
 import type { ChatContextStrategy, ChatSession } from '@/entities/chat/model/types';
 import { USER_MESSAGE_LIMIT } from '@/entities/chat/lib/constants';
+import { CHAT_TASK_OPTIONS } from '@/entities/chat/lib/taskConfig';
 import { MarkdownMessage } from '@/entities/chat-response/ui/MarkdownMessage';
 import { useChat } from '@/features/chat/model/useChat';
 import { PageContainer } from '@/shared/ui/PageContainer';
@@ -72,6 +73,7 @@ export function SearchPage() {
     createNewChat,
     currentChatStrategy,
     currentChatProfile,
+    currentChatTask,
     currentStrategy1WindowSize,
     currentStrategy2WindowSize,
     currentChatId,
@@ -92,6 +94,7 @@ export function SearchPage() {
     sendUserMessage,
     setCurrentChatStrategy,
     setCurrentChatProfile,
+    setCurrentChatTask,
     setStrategy1WindowSize,
     setStrategy2WindowSize,
     setInputValue,
@@ -142,6 +145,10 @@ export function SearchPage() {
 
   const handleProfileChange = (event: SelectChangeEvent) => {
     setCurrentChatProfile(event.target.value as typeof currentChatProfile);
+  };
+
+  const handleTaskChange = (event: SelectChangeEvent) => {
+    setCurrentChatTask(event.target.value as typeof currentChatTask);
   };
 
   const handleStrategy1WindowInputChange = (nextValue: string) => {
@@ -334,6 +341,21 @@ export function SearchPage() {
                   </Button>
                 )}
               </Box>
+              <FormControl>
+                <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 0.5 }}>
+                  Задача
+                </Typography>
+                <FormControl size="small" disabled={!isCurrentChatEmpty || isLoading}>
+                  <InputLabel id="chat-task-select-label">Задача</InputLabel>
+                  <Select labelId="chat-task-select-label" label="Задача" value={currentChatTask} onChange={handleTaskChange}>
+                    {CHAT_TASK_OPTIONS.map((option) => (
+                      <MenuItem key={option.id} value={option.id}>
+                        {option.label}
+                      </MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
+              </FormControl>
             </Stack>
           </AccordionDetails>
         </Accordion>

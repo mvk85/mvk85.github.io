@@ -43,6 +43,8 @@ describe('chat strategy storage', () => {
     const chat = createEmptyChatSession();
 
     expect(chat.profileId).toBe('none');
+    expect(chat.taskId).toBe('none');
+    expect(chat.taskState).toBeNull();
     expect(chat.contextStrategy).toBe('strategy-1');
     expect(chat.parentChatId).toBeNull();
     expect(chat.strategySettings.strategy1WindowSize).toBe(10);
@@ -54,6 +56,8 @@ describe('chat strategy storage', () => {
     const chat = createChatSession({ contextStrategy: 'strategy-3', profileId: 'fullstack_programmer' });
 
     expect(chat.profileId).toBe('fullstack_programmer');
+    expect(chat.taskId).toBe('none');
+    expect(chat.taskState).toBeNull();
     expect(chat.contextStrategy).toBe('strategy-3');
     expect(chat.parentChatId).toBeNull();
     expect(chat.strategySettings.strategy1WindowSize).toBe(10);
@@ -95,6 +99,8 @@ describe('chat strategy storage', () => {
     expect(state).not.toBeNull();
     expect(diagnostics.hasChatsWithoutStrategy).toBe(true);
     expect(state?.currentChat.contextStrategy).toBe('strategy-1');
+    expect(state?.currentChat.taskId).toBe('none');
+    expect(state?.currentChat.taskState).toBeNull();
     expect(state?.currentChat.parentChatId).toBeNull();
     expect(state?.currentChat.strategySettings.strategy1WindowSize).toBe(10);
     expect(state?.currentChat.strategySettings.strategy2WindowSize).toBe(10);

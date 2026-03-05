@@ -13,8 +13,10 @@ import {
 import { loadLongTermMemory, resetLongTermMemory, saveLongTermMemory } from '@/entities/chat/lib/longTermMemoryStorage';
 import { createBranchedChatSession, createEmptyChatSession, initializeChatSessionsStateWithDiagnostics, prepareHistoryChat, saveChatSessionsState } from '@/entities/chat/lib/sessionStorage';
 import { getNextMessageId } from '@/entities/chat/lib/storage';
+import { createFrontendPromptInitialTaskState, isTaskEnabled } from '@/entities/chat/lib/taskConfig';
+import { runFrontendPromptTaskTurn } from '@/entities/chat/lib/taskWorkflow';
 import { deleteWorkingMemoryForChat, loadWorkingMemoryByChat, saveWorkingMemoryByChat } from '@/entities/chat/lib/workingMemoryStorage';
-import type { ChatContextStrategy, ChatMessage, ChatSession, LongTermMemoryItem, Strategy2Facts, WorkingMemory } from '@/entities/chat/model/types';
+import type { ChatContextStrategy, ChatMessage, ChatSession, ChatTaskId, LongTermMemoryItem, Strategy2Facts, WorkingMemory } from '@/entities/chat/model/types';
 import type { ChatCompletionUsage } from '@/entities/chat-response/model/types';
 import { openAiProxyChatApi } from '@/shared/api/openAiProxyChatApi';
 import { env } from '@/shared/config/env';
@@ -514,6 +516,65 @@ export function useChat() {
       let accumulatedUsage = createEmptyUsage();
 
       let chatForRequest = currentWithUserMessage;
+      if (isTaskEnabled(chatForRequest.taskId) && chatForRequest.taskState) {
+        const taskTurn = await runFrontendPromptTaskTurn({
+          chatId: chatForRequest.id,
+          taskState: chatForRequest.taskState,
+          userInput: userMessage.content,
+          llmCall: async (taskMessages) => {
+            const payload = buildChatCompletionPayload(taskMessages, env.llmModelMain);
+            const response = await openAiProxyChatApi.createChatCompletion(payload);
+            return {
+              text: extractAssistantText(response),
+              usage: extractUsageSafe(response),
+            };
+          },
+        });
+        accumulatedUsage = addUsage(accumulatedUsage, taskTurn.usage);
+
+        const assistantMessage: ChatMessage = {
+          id: getNextMessageId(chatForRequest.messages),
+          role: 'assistant',
+          content: taskTurn.assistantText,
+        };
+
+        const updatedCurrentChat: ChatSession = {
+          ...chatForRequest,
+          taskState: taskTurn.taskState,
+          messages: [...chatForRequest.messages, assistantMessage],
+        };
+        nextHistoryState = syncChatToHistory(nextHistoryState, updatedCurrentChat);
+        persistSessions(updatedCurrentChat, nextHistoryState);
+
+        const balanceAfter = await openAiProxyChatApi.getBalance().catch(() => {
+          throw new Error('Баланс не получен.');
+        });
+        const requestCost = balanceBefore - balanceAfter;
+        if (!isFiniteNumber(requestCost) || requestCost <= 0) {
+          throw new Error('Ошибка расчета стоимости запроса: баланс не уменьшился.');
+        }
+
+        const nextStatsState: ChatStatsState = {
+          ...statsState,
+          previousBalance: balanceAfter,
+          byChat: {
+            ...statsState.byChat,
+            [updatedCurrentChat.id]: {
+              ...getChatStats(statsState, updatedCurrentChat.id),
+              model: env.llmModelMain,
+              totalCost: getChatStats(statsState, updatedCurrentChat.id).totalCost + requestCost,
+              promptTokens: getChatStats(statsState, updatedCurrentChat.id).promptTokens + accumulatedUsage.prompt_tokens,
+              completionTokens: getChatStats(statsState, updatedCurrentChat.id).completionTokens + accumulatedUsage.completion_tokens,
+              totalTokens: getChatStats(statsState, updatedCurrentChat.id).totalTokens + accumulatedUsage.total_tokens,
+            },
+          },
+        };
+        saveChatStats(nextStatsState);
+        setStatsState(nextStatsState);
+        setStatus('success');
+        return;
+      }
+
       if (currentWithUserMessage.contextStrategy === 'strategy-2') {
         const extractedFacts = await extractFactsForUserMessage(userMessage.content);
         const mergedFacts = {
@@ -732,6 +793,24 @@ export function useChat() {
     [chatHistory, currentChat, persistSessions, status],
   );
 
+  const setCurrentChatTask = useCallback(
+    (taskId: ChatTaskId) => {
+      if (status === 'loading' || !isChatEmpty(currentChat) || currentChat.taskId === taskId) {
+        return false;
+      }
+
+      const nextCurrentChat: ChatSession = {
+        ...currentChat,
+        taskId,
+        taskState: isTaskEnabled(taskId) ? createFrontendPromptInitialTaskState() : null,
+      };
+
+      persistSessions(nextCurrentChat, chatHistory);
+      return true;
+    },
+    [chatHistory, currentChat, persistSessions, status],
+  );
+
   const setStrategy1WindowSize = useCallback(
     (windowSize: number) => {
       if (status === 'loading' || !isChatEmpty(currentChat) || !Number.isInteger(windowSize) || windowSize <= 0) {
@@ -902,6 +981,7 @@ export function useChat() {
     createNewChat,
     currentChatStrategy: currentChat.contextStrategy,
     currentChatProfile: currentChat.profileId,
+    currentChatTask: currentChat.taskId,
     currentStrategy1WindowSize: currentChat.strategySettings.strategy1WindowSize,
     currentStrategy2WindowSize: currentChat.strategySettings.strategy2WindowSize,
     currentChatId: currentChat.id,
@@ -921,6 +1001,7 @@ export function useChat() {
     workingMemory: currentWorkingMemory,
     setCurrentChatStrategy,
     setCurrentChatProfile,
+    setCurrentChatTask,
     setStrategy1WindowSize,
     setStrategy2WindowSize,
     setInputValue,
