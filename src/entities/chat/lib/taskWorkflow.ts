@@ -1,5 +1,6 @@
 import { assertTaskTransition } from '@/entities/chat/lib/taskStateMachine';
-import type { FrontendPromptTaskState, LlmMessage, TaskPlanningQuestion, TaskValidationResult } from '@/entities/chat/model/types';
+import { getTaskInvariants } from '@/entities/chat/lib/taskConfig';
+import type { FrontendPromptTaskState, LlmMessage, TaskInvariant, TaskInvariantViolation, TaskPlanningQuestion, TaskValidationResult } from '@/entities/chat/model/types';
 import type { ChatCompletionUsage } from '@/entities/chat-response/model/types';
 
 type TaskLlmCall = (messages: LlmMessage[]) => Promise<{ text: string; usage: ChatCompletionUsage }>;
@@ -19,6 +20,10 @@ export type TaskTurnResult = {
 
 const CONTINUE_PATTERN = /(дальше|перейти|продолж|skip|next)/i;
 const SATISFIED_PATTERN = /(устраивает|подходит|ок|ok|согласен|без правок|завершаем|готово)/i;
+const FRAMEWORK_INVARIANT_PATTERN = /\b(react|vue|svelte)\b/i;
+const DISALLOWED_FRAMEWORK_PATTERN = /\b(angular|next(?:\.js)?|nuxt|ember|solid|preact|backbone)\b/i;
+const DESIGN_SYSTEM_INVARIANT_PATTERN = /\b(mui|material ui|ant|ant design|tailwind)\b/i;
+const DISALLOWED_API_PATTERN = /\b(graphql|grpc|soap|apollo|rpc)\b/i;
 
 function createEmptyUsage(): ChatCompletionUsage {
   return {
@@ -46,7 +51,13 @@ function extractJson(text: string): unknown {
 }
 
 function formatTaskMessage(stage: string, currentStep: string, expectedAction: string, body: string): string {
-  return [`Этап задачи: ${stage}`, `Текущий шаг: ${currentStep}`, `Ожидаемое действие: ${expectedAction}`, '', body].join('\n');
+  return [
+    `**Этап задачи:** ${stage}  `,
+    `**Текущий шаг:** ${currentStep}  `,
+    `**Ожидаемое действие:** ${expectedAction}`,
+    '',
+    body,
+  ].join('\n');
 }
 
 function getMissingQuestionIds(state: FrontendPromptTaskState): string[] {
@@ -83,6 +94,7 @@ function mergePlanningAnswers(
       ...state.planningAnswers,
       ...incomingAnswers,
     },
+    invariantViolation: null,
     updatedAt: nowIso,
     version: state.version + 1,
   };
@@ -102,6 +114,24 @@ function transitionStage(
   return {
     ...state,
     stage: toStage,
+    currentStep,
+    expectedAction,
+    invariantViolation: null,
+    updatedAt: nowIso,
+    version: state.version + 1,
+  };
+}
+
+function setInvariantViolation(
+  state: FrontendPromptTaskState,
+  violation: TaskInvariantViolation | null,
+  currentStep: string,
+  expectedAction: string,
+  nowIso: string = new Date().toISOString(),
+): FrontendPromptTaskState {
+  return {
+    ...state,
+    invariantViolation: violation,
     currentStep,
     expectedAction,
     updatedAt: nowIso,
@@ -198,6 +228,212 @@ function buildMissingQuestionsText(state: FrontendPromptTaskState, missingQuesti
     })
     .filter((line): line is string => Boolean(line))
     .join('\n');
+}
+
+function formatInvariantViolationBody(violation: TaskInvariantViolation): string {
+  return [
+    '**Нарушение инварианта:**',
+    `- Инвариант: ${violation.ruleText}.`,
+    `- Вопрос: ${violation.questionId.replace('q', '')}. ${violation.questionText}.`,
+    '- Что не так: ответ противоречит ограничению задачи.',
+    '- Что сделать: исправьте ответ по инварианту.',
+  ].join('\n');
+}
+
+function detectInvariantViolationLocally(invariant: TaskInvariant, text: string): boolean {
+  const normalized = text.trim();
+  if (!normalized) {
+    return true;
+  }
+
+  if (invariant.questionId === 'q2') {
+    return !FRAMEWORK_INVARIANT_PATTERN.test(normalized) || DISALLOWED_FRAMEWORK_PATTERN.test(normalized);
+  }
+
+  if (invariant.questionId === 'q3') {
+    return !DESIGN_SYSTEM_INVARIANT_PATTERN.test(normalized) || /\bcustom\b/i.test(normalized);
+  }
+
+  if (invariant.questionId === 'q4') {
+    return !/\brest\b/i.test(normalized) || DISALLOWED_API_PATTERN.test(normalized);
+  }
+
+  return false;
+}
+
+async function validateInvariantAnswer(
+  invariant: TaskInvariant,
+  answer: string,
+  llmCall: TaskLlmCall,
+): Promise<{ violation: TaskInvariantViolation | null; usage: ChatCompletionUsage }> {
+  const fallbackViolation = detectInvariantViolationLocally(invariant, answer)
+    ? {
+        invariantId: invariant.id,
+        questionId: invariant.questionId,
+        questionText: invariant.questionText,
+        ruleText: invariant.ruleText,
+      }
+    : null;
+
+  try {
+    const { text, usage } = await llmCall([
+      {
+        role: 'system',
+        content: `Ты проверяешь ответ пользователя на соответствие инварианту задачи.
+Верни только JSON:
+{
+  "status": "passed" | "failed"
+}
+Если есть хоть малейшее нарушение инварианта, верни status=failed.
+Не добавляй markdown и комментарии.`,
+      },
+      {
+        role: 'user',
+        content: `Вопрос: ${invariant.questionText}
+Инвариант: ${invariant.ruleText}
+Ответ пользователя: ${answer}`,
+      },
+    ]);
+    const parsed = extractJson(text) as { status?: unknown };
+    return {
+      violation:
+        parsed.status === 'failed'
+          ? {
+              invariantId: invariant.id,
+              questionId: invariant.questionId,
+              questionText: invariant.questionText,
+              ruleText: invariant.ruleText,
+            }
+          : parsed.status === 'passed'
+            ? null
+            : fallbackViolation,
+      usage,
+    };
+  } catch {
+    return {
+      violation: fallbackViolation,
+      usage: createEmptyUsage(),
+    };
+  }
+}
+
+async function validateChangedPlanningAnswers(
+  state: FrontendPromptTaskState,
+  incomingAnswers: Record<string, string>,
+  llmCall: TaskLlmCall,
+): Promise<{
+  acceptedAnswers: Record<string, string>;
+  violation: TaskInvariantViolation | null;
+  usage: ChatCompletionUsage;
+}> {
+  if (!state.invariantsEnabled) {
+    return {
+      acceptedAnswers: incomingAnswers,
+      violation: null,
+      usage: createEmptyUsage(),
+    };
+  }
+
+  const invariantsByQuestion = new Map(getTaskInvariants(state.taskId).map((invariant) => [invariant.questionId, invariant]));
+  const acceptedAnswers: Record<string, string> = {};
+  let accumulatedUsage = createEmptyUsage();
+
+  for (const [questionId, answer] of Object.entries(incomingAnswers)) {
+    const invariant = invariantsByQuestion.get(questionId);
+    if (!invariant) {
+      acceptedAnswers[questionId] = answer;
+      continue;
+    }
+
+    const validation = await validateInvariantAnswer(invariant, answer, llmCall);
+    accumulatedUsage = addUsage(accumulatedUsage, validation.usage);
+    if (validation.violation) {
+      return {
+        acceptedAnswers,
+        violation: validation.violation,
+        usage: accumulatedUsage,
+      };
+    }
+
+    acceptedAnswers[questionId] = answer;
+  }
+
+  return {
+    acceptedAnswers,
+    violation: null,
+    usage: accumulatedUsage,
+  };
+}
+
+async function validateGeneratedPromptInvariants(
+  state: FrontendPromptTaskState,
+  generatedPrompt: string,
+  llmCall: TaskLlmCall,
+): Promise<{ violation: TaskInvariantViolation | null; usage: ChatCompletionUsage }> {
+  if (!state.invariantsEnabled) {
+    return {
+      violation: null,
+      usage: createEmptyUsage(),
+    };
+  }
+
+  const invariants = getTaskInvariants(state.taskId);
+  const fallbackViolation = invariants.find((invariant) => detectInvariantViolationLocally(invariant, generatedPrompt));
+
+  try {
+    const { text, usage } = await llmCall([
+      {
+        role: 'system',
+        content: `Ты проверяешь итоговый промпт задачи на жесткое соответствие инвариантам.
+Верни только JSON:
+{
+  "status": "passed" | "failed",
+  "violatedInvariantId": "id или null"
+}
+Если промпт нарушает хотя бы один инвариант, верни status=failed и укажи violatedInvariantId.
+Не добавляй markdown и комментарии.`,
+      },
+      {
+        role: 'user',
+        content: `Инварианты:
+${invariants.map((invariant) => `- ${invariant.id}: ${invariant.ruleText}`).join('\n')}
+
+Итоговый промпт:
+${generatedPrompt}`,
+      },
+    ]);
+    const parsed = extractJson(text) as { status?: unknown; violatedInvariantId?: unknown };
+    const violatedInvariant =
+      parsed.status === 'failed' && typeof parsed.violatedInvariantId === 'string'
+        ? invariants.find((invariant) => invariant.id === parsed.violatedInvariantId) ?? fallbackViolation
+        : parsed.status === 'failed'
+          ? fallbackViolation
+          : null;
+
+    return {
+      violation: violatedInvariant
+        ? {
+            invariantId: violatedInvariant.id,
+            questionId: violatedInvariant.questionId,
+            questionText: violatedInvariant.questionText,
+            ruleText: violatedInvariant.ruleText,
+          }
+        : null,
+      usage,
+    };
+  } catch {
+    return {
+      violation: fallbackViolation
+        ? {
+            invariantId: fallbackViolation.id,
+            questionId: fallbackViolation.questionId,
+            questionText: fallbackViolation.questionText,
+            ruleText: fallbackViolation.ruleText,
+          }
+        : null,
+      usage: createEmptyUsage(),
+    };
+  }
 }
 
 function buildExecutionPrompt(state: FrontendPromptTaskState, revisionRequest: string | null): LlmMessage[] {
@@ -350,6 +586,38 @@ async function executeAndValidate(
 ): Promise<TaskTurnResult> {
   const generation = await llmCall(buildExecutionPrompt(state, revisionRequest));
   const generatedPrompt = generation.text.trim();
+  const invariantCheck = await validateGeneratedPromptInvariants(state, generatedPrompt, llmCall);
+  if (invariantCheck.violation) {
+    const blockedState = transitionStage(
+      chatId,
+      state,
+      'validation',
+      'Исправление ответа, который нарушает инвариант задачи.',
+      'Исправьте ответ на проблемный вопрос в соответствии с инвариантом.',
+      'execution_invariant_failed',
+    );
+    const violatedState = setInvariantViolation(
+      {
+        ...blockedState,
+        lastGeneratedPrompt: generatedPrompt,
+      },
+      invariantCheck.violation,
+      'Исправление ответа, который нарушает инвариант задачи.',
+      'Исправьте ответ на проблемный вопрос в соответствии с инвариантом.',
+    );
+
+    return {
+      taskState: violatedState,
+      assistantText: formatTaskMessage(
+        violatedState.stage,
+        violatedState.currentStep,
+        violatedState.expectedAction,
+        formatInvariantViolationBody(invariantCheck.violation),
+      ),
+      usage: addUsage(generation.usage, invariantCheck.usage),
+    };
+  }
+
   const stageAfterExecution = transitionStage(
     chatId,
     state,
@@ -364,6 +632,7 @@ async function executeAndValidate(
     ...stageAfterExecution,
     validationResult: review.result,
     lastGeneratedPrompt: generatedPrompt,
+    invariantViolation: null,
     revisionRequest,
     updatedAt: new Date().toISOString(),
     version: stageAfterExecution.version + 1,
@@ -388,7 +657,7 @@ async function executeAndValidate(
       normalizedState.expectedAction,
       buildValidationBody(generatedPrompt, review.result),
     ),
-    usage: addUsage(generation.usage, review.usage),
+    usage: addUsage(addUsage(generation.usage, invariantCheck.usage), review.usage),
   };
 }
 
@@ -406,8 +675,30 @@ export async function runFrontendPromptTaskTurn(input: TaskTurnInput): Promise<T
       ...fromNumberedList,
     };
 
-    nextState = mergePlanningAnswers(nextState, mergedIncomingAnswers);
     accumulatedUsage = addUsage(accumulatedUsage, extracted.usage);
+    const invariantValidation = await validateChangedPlanningAnswers(nextState, mergedIncomingAnswers, input.llmCall);
+    accumulatedUsage = addUsage(accumulatedUsage, invariantValidation.usage);
+    nextState = mergePlanningAnswers(nextState, invariantValidation.acceptedAnswers);
+
+    if (invariantValidation.violation) {
+      const violatedState = setInvariantViolation(
+        nextState,
+        invariantValidation.violation,
+        'Проверяем ответы пользователя на инварианты задачи.',
+        'Исправьте ответ на проблемный вопрос в соответствии с инвариантом.',
+      );
+
+      return {
+        taskState: violatedState,
+        assistantText: formatTaskMessage(
+          'planning',
+          violatedState.currentStep,
+          violatedState.expectedAction,
+          formatInvariantViolationBody(invariantValidation.violation),
+        ),
+        usage: accumulatedUsage,
+      };
+    }
 
     const missingQuestionIds = getMissingQuestionIds(nextState);
     if (missingQuestionIds.length > 0) {
@@ -425,6 +716,7 @@ export async function runFrontendPromptTaskTurn(input: TaskTurnInput): Promise<T
           stage: 'planning',
           currentStep: 'Собираем ответы на все вопросы planning.',
           expectedAction: 'Дайте ответы на оставшиеся вопросы (можно частями).',
+          invariantViolation: null,
           updatedAt: new Date().toISOString(),
           version: nextState.version + 1,
         },
@@ -455,7 +747,7 @@ export async function runFrontendPromptTaskTurn(input: TaskTurnInput): Promise<T
   }
 
   if (input.taskState.stage === 'validation') {
-    if (SATISFIED_PATTERN.test(normalizedUserInput)) {
+    if (SATISFIED_PATTERN.test(normalizedUserInput) && !input.taskState.invariantViolation) {
       const doneState = transitionStage(
         input.chatId,
         input.taskState,
@@ -469,6 +761,66 @@ export async function runFrontendPromptTaskTurn(input: TaskTurnInput): Promise<T
         taskState: doneState,
         assistantText: formatTaskMessage('done', doneState.currentStep, doneState.expectedAction, `Финальный промпт:\n${finalPrompt}`),
         usage: createEmptyUsage(),
+      };
+    }
+
+    if (input.taskState.invariantViolation) {
+      const extracted = await extractPlanningAnswers(input.taskState, normalizedUserInput, input.llmCall);
+      const fromNumberedList = extractAnswersByNumbering(input.taskState, normalizedUserInput);
+      const mergedIncomingAnswers: Record<string, string> = {
+        ...extracted.answers,
+        ...fromNumberedList,
+      };
+      const targetQuestionId = input.taskState.invariantViolation.questionId;
+
+      if (!mergedIncomingAnswers[targetQuestionId]) {
+        return {
+          taskState: input.taskState,
+          assistantText: formatTaskMessage(
+            'validation',
+            input.taskState.currentStep,
+            input.taskState.expectedAction,
+            formatInvariantViolationBody(input.taskState.invariantViolation),
+          ),
+          usage: extracted.usage,
+        };
+      }
+
+      const validatedAnswers = await validateChangedPlanningAnswers(input.taskState, mergedIncomingAnswers, input.llmCall);
+      const accumulatedUsage = addUsage(extracted.usage, validatedAnswers.usage);
+      const nextState = mergePlanningAnswers(input.taskState, validatedAnswers.acceptedAnswers);
+
+      if (validatedAnswers.violation) {
+        const violatedState = setInvariantViolation(
+          nextState,
+          validatedAnswers.violation,
+          'Исправление ответа, который нарушает инвариант задачи.',
+          'Исправьте ответ на проблемный вопрос в соответствии с инвариантом.',
+        );
+        return {
+          taskState: violatedState,
+          assistantText: formatTaskMessage(
+            'validation',
+            violatedState.currentStep,
+            violatedState.expectedAction,
+            formatInvariantViolationBody(validatedAnswers.violation),
+          ),
+          usage: accumulatedUsage,
+        };
+      }
+
+      const executionState = transitionStage(
+        input.chatId,
+        nextState,
+        'execution',
+        'Пересобираем промпт с учетом исправленного ответа пользователя.',
+        'Подождите, идет пересборка промпта и повторная валидация.',
+        'validation_invariant_fixed',
+      );
+      const executionResult = await executeAndValidate(input.chatId, executionState, input.llmCall, null);
+      return {
+        ...executionResult,
+        usage: addUsage(accumulatedUsage, executionResult.usage),
       };
     }
 

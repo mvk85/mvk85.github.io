@@ -35,6 +35,20 @@ export type TaskPlanningQuestion = {
   text: string;
 };
 
+export type TaskInvariant = {
+  id: string;
+  questionId: string;
+  questionText: string;
+  ruleText: string;
+};
+
+export type TaskInvariantViolation = {
+  invariantId: string;
+  questionId: string;
+  questionText: string;
+  ruleText: string;
+};
+
 export type TaskValidationResult = {
   status: 'needs_revision' | 'approved';
   reviewSummary: string;
@@ -50,7 +64,9 @@ export type FrontendPromptTaskState = {
   expectedAction: string;
   planningQuestions: TaskPlanningQuestion[];
   planningAnswers: Record<string, string>;
+  invariantsEnabled: boolean;
   lastGeneratedPrompt: string | null;
+  invariantViolation: TaskInvariantViolation | null;
   validationResult: TaskValidationResult | null;
   revisionRequest: string | null;
   createdAt: string;

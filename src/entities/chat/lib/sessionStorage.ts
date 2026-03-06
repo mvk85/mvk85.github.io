@@ -3,6 +3,7 @@ import { loadChatMessages } from '@/entities/chat/lib/storage';
 import { createEmptySummaryState, loadChatSummaryState } from '@/entities/chat/lib/summaryStorage';
 import {
   createFrontendPromptInitialTaskState,
+  FRONTEND_PROMPT_TASK_QUESTIONS,
   isTaskEnabled,
   isValidChatTaskId,
 } from '@/entities/chat/lib/taskConfig';
@@ -217,6 +218,24 @@ function normalizeTaskState(value: unknown, taskId: Exclude<ChatTaskId, 'none'>)
     }
   }
 
+  const invariantViolation =
+    typeof candidate.invariantViolation === 'object' && candidate.invariantViolation !== null && !Array.isArray(candidate.invariantViolation)
+      ? candidate.invariantViolation
+      : null;
+  const normalizedInvariantViolation =
+    invariantViolation &&
+    typeof invariantViolation.invariantId === 'string' &&
+    typeof invariantViolation.questionId === 'string' &&
+    typeof invariantViolation.questionText === 'string' &&
+    typeof invariantViolation.ruleText === 'string'
+      ? {
+          invariantId: invariantViolation.invariantId,
+          questionId: invariantViolation.questionId,
+          questionText: invariantViolation.questionText,
+          ruleText: invariantViolation.ruleText,
+        }
+      : null;
+
   return {
     taskId: 'frontend_app_prompt',
     stage: candidate.stage,
@@ -225,9 +244,15 @@ function normalizeTaskState(value: unknown, taskId: Exclude<ChatTaskId, 'none'>)
       typeof candidate.expectedAction === 'string'
         ? candidate.expectedAction
         : 'Ответьте на все вопросы planning (можно частями в нескольких сообщениях).',
-    planningQuestions: planningQuestions.length > 0 ? planningQuestions : createFrontendPromptInitialTaskState().planningQuestions,
+    planningQuestions:
+      planningQuestions.length === FRONTEND_PROMPT_TASK_QUESTIONS.length &&
+      planningQuestions.every((question, index) => question.id === FRONTEND_PROMPT_TASK_QUESTIONS[index]?.id)
+        ? FRONTEND_PROMPT_TASK_QUESTIONS.map((question) => ({ ...question }))
+        : createFrontendPromptInitialTaskState().planningQuestions,
     planningAnswers,
+    invariantsEnabled: typeof candidate.invariantsEnabled === 'boolean' ? candidate.invariantsEnabled : false,
     lastGeneratedPrompt: typeof candidate.lastGeneratedPrompt === 'string' ? candidate.lastGeneratedPrompt : null,
+    invariantViolation: normalizedInvariantViolation,
     validationResult: normalizedValidationResult,
     revisionRequest: typeof candidate.revisionRequest === 'string' ? candidate.revisionRequest : null,
     createdAt: typeof candidate.createdAt === 'string' ? candidate.createdAt : new Date().toISOString(),
@@ -407,6 +432,8 @@ export function createBranchedChatSession(parentChat: ChatSession, allChats: Cha
           ...parentChat.taskState,
           planningQuestions: parentChat.taskState.planningQuestions.map((question) => ({ ...question })),
           planningAnswers: { ...parentChat.taskState.planningAnswers },
+          invariantsEnabled: parentChat.taskState.invariantsEnabled,
+          invariantViolation: parentChat.taskState.invariantViolation ? { ...parentChat.taskState.invariantViolation } : null,
           validationResult: parentChat.taskState.validationResult
             ? {
                 ...parentChat.taskState.validationResult,

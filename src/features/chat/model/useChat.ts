@@ -811,6 +811,33 @@ export function useChat() {
     [chatHistory, currentChat, persistSessions, status],
   );
 
+  const setCurrentTaskInvariantsEnabled = useCallback(
+    (enabled: boolean) => {
+      if (status === 'loading' || !isChatEmpty(currentChat) || currentChat.taskId === 'none' || !currentChat.taskState) {
+        return false;
+      }
+
+      if (currentChat.taskState.invariantsEnabled === enabled) {
+        return true;
+      }
+
+      const nextCurrentChat: ChatSession = {
+        ...currentChat,
+        taskState: {
+          ...currentChat.taskState,
+          invariantsEnabled: enabled,
+          invariantViolation: null,
+          updatedAt: new Date().toISOString(),
+          version: currentChat.taskState.version + 1,
+        },
+      };
+
+      persistSessions(nextCurrentChat, chatHistory);
+      return true;
+    },
+    [chatHistory, currentChat, persistSessions, status],
+  );
+
   const setStrategy1WindowSize = useCallback(
     (windowSize: number) => {
       if (status === 'loading' || !isChatEmpty(currentChat) || !Number.isInteger(windowSize) || windowSize <= 0) {
@@ -982,6 +1009,7 @@ export function useChat() {
     currentChatStrategy: currentChat.contextStrategy,
     currentChatProfile: currentChat.profileId,
     currentChatTask: currentChat.taskId,
+    currentTaskInvariantsEnabled: currentChat.taskState?.invariantsEnabled ?? false,
     currentStrategy1WindowSize: currentChat.strategySettings.strategy1WindowSize,
     currentStrategy2WindowSize: currentChat.strategySettings.strategy2WindowSize,
     currentChatId: currentChat.id,
@@ -1002,6 +1030,7 @@ export function useChat() {
     setCurrentChatStrategy,
     setCurrentChatProfile,
     setCurrentChatTask,
+    setCurrentTaskInvariantsEnabled,
     setStrategy1WindowSize,
     setStrategy2WindowSize,
     setInputValue,

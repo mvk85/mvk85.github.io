@@ -44,6 +44,13 @@ describe('task session storage', () => {
     const taskState = createFrontendPromptInitialTaskState('2026-03-01T00:00:00.000Z');
     taskState.stage = 'validation';
     taskState.lastGeneratedPrompt = 'Prompt v1';
+    taskState.invariantsEnabled = true;
+    taskState.invariantViolation = {
+      invariantId: 'frontend_rest_only',
+      questionId: 'q4',
+      questionText: 'Какие требования к API-интеграции (REST, auth, обработка ошибок, retries)?',
+      ruleText: 'Допускается только REST. GraphQL и любая другая система интеграции API запрещены.',
+    };
 
     localStorage.setItem(
       CHAT_SESSIONS_STORAGE_KEY,
@@ -66,6 +73,8 @@ describe('task session storage', () => {
     expect(loaded.state?.currentChat.taskId).toBe('frontend_app_prompt');
     expect(loaded.state?.currentChat.taskState?.stage).toBe('validation');
     expect(loaded.state?.currentChat.taskState?.lastGeneratedPrompt).toBe('Prompt v1');
+    expect(loaded.state?.currentChat.taskState?.invariantsEnabled).toBe(true);
+    expect(loaded.state?.currentChat.taskState?.invariantViolation?.questionId).toBe('q4');
   });
 
   it('для чатов без taskId применяет режим none', () => {

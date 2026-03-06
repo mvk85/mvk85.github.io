@@ -14,6 +14,7 @@ import {
   Drawer,
   FormControl,
   FormControlLabel,
+  Checkbox,
   IconButton,
   Menu,
   MenuItem,
@@ -32,7 +33,7 @@ import {
 
 import type { ChatContextStrategy, ChatSession } from '@/entities/chat/model/types';
 import { USER_MESSAGE_LIMIT } from '@/entities/chat/lib/constants';
-import { CHAT_TASK_OPTIONS } from '@/entities/chat/lib/taskConfig';
+import { CHAT_TASK_OPTIONS, getTaskInvariants } from '@/entities/chat/lib/taskConfig';
 import { MarkdownMessage } from '@/entities/chat-response/ui/MarkdownMessage';
 import { useChat } from '@/features/chat/model/useChat';
 import { PageContainer } from '@/shared/ui/PageContainer';
@@ -74,6 +75,7 @@ export function SearchPage() {
     currentChatStrategy,
     currentChatProfile,
     currentChatTask,
+    currentTaskInvariantsEnabled,
     currentStrategy1WindowSize,
     currentStrategy2WindowSize,
     currentChatId,
@@ -95,6 +97,7 @@ export function SearchPage() {
     setCurrentChatStrategy,
     setCurrentChatProfile,
     setCurrentChatTask,
+    setCurrentTaskInvariantsEnabled,
     setStrategy1WindowSize,
     setStrategy2WindowSize,
     setInputValue,
@@ -150,6 +153,9 @@ export function SearchPage() {
   const handleTaskChange = (event: SelectChangeEvent) => {
     setCurrentChatTask(event.target.value as typeof currentChatTask);
   };
+
+  const taskInvariants = getTaskInvariants(currentChatTask);
+  const shouldShowTaskInvariants = currentChatTask !== 'none' && taskInvariants.length > 0;
 
   const handleStrategy1WindowInputChange = (nextValue: string) => {
     if (nextValue === '') {
@@ -356,6 +362,35 @@ export function SearchPage() {
                   </Select>
                 </FormControl>
               </FormControl>
+              {shouldShowTaskInvariants ? (
+                <Box>
+                  <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 0.5 }}>
+                    Инварианты задачи
+                  </Typography>
+                  <FormControlLabel
+                    control={
+                      <Checkbox
+                        checked={currentTaskInvariantsEnabled}
+                        onChange={(event) => setCurrentTaskInvariantsEnabled(event.target.checked)}
+                        disabled={!isCurrentChatEmpty || isLoading}
+                      />
+                    }
+                    label="Включить инварианты"
+                  />
+                  <Stack spacing={0.75} sx={{ mt: 0.5 }}>
+                    {taskInvariants.map((invariant) => (
+                      <Paper key={invariant.id} variant="outlined" sx={{ p: 1.25, backgroundColor: '#fbfcff' }}>
+                        <Typography variant="body2" fontWeight={600}>
+                          {invariant.questionText}
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary">
+                          {invariant.ruleText}
+                        </Typography>
+                      </Paper>
+                    ))}
+                  </Stack>
+                </Box>
+              ) : null}
             </Stack>
           </AccordionDetails>
         </Accordion>

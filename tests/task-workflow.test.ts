@@ -51,7 +51,7 @@ describe('task workflow', () => {
 
     expect(result.taskState.stage).toBe('planning');
     expect(result.taskState.planningAnswers.q1).toBe('SaaS платформа');
-    expect(result.assistantText).toContain('Этап задачи: planning');
+    expect(result.assistantText).toContain('**Этап задачи:** planning');
     expect(result.assistantText).toContain('Еще не отвечено');
   });
 
@@ -73,7 +73,7 @@ describe('task workflow', () => {
 
     expect(result.taskState.stage).toBe('validation');
     expect(result.taskState.lastGeneratedPrompt).toContain('Итоговый промпт');
-    expect(result.assistantText).toContain('Этап задачи: validation');
+    expect(result.assistantText).toContain('**Этап задачи:** validation');
   });
 
   it('в validation переходит к done по подтверждению пользователя', async () => {
@@ -101,7 +101,79 @@ describe('task workflow', () => {
     });
 
     expect(result.taskState.stage).toBe('done');
-    expect(result.assistantText).toContain('Этап задачи: done');
+    expect(result.assistantText).toContain('**Этап задачи:** done');
     expect(result.assistantText).toContain('Финальный промпт');
+  });
+
+  it('блокируется в planning при нарушении инварианта', async () => {
+    const state = createFrontendPromptInitialTaskState('2026-03-01T00:00:00.000Z');
+    state.invariantsEnabled = true;
+    const llm = createLlmStub([
+      { text: '{"answers":{"q2":"Angular + TypeScript"}}' },
+      { text: '{"status":"failed"}' },
+    ]);
+
+    const result = await runFrontendPromptTaskTurn({
+      chatId: 'chat-4',
+      taskState: state,
+      userInput: '2. Angular + TypeScript',
+      llmCall: llm,
+    });
+
+    expect(result.taskState.stage).toBe('planning');
+    expect(result.taskState.planningAnswers.q2).toBeUndefined();
+    expect(result.taskState.invariantViolation?.questionId).toBe('q2');
+    expect(result.assistantText).toContain('**Нарушение инварианта:**');
+    expect(result.assistantText).toContain('- Вопрос: 2.');
+  });
+
+  it('блокируется в validation, если итоговый промпт нарушает инвариант, и продолжает после исправления', async () => {
+    const state = createFrontendPromptInitialTaskState('2026-03-01T00:00:00.000Z');
+    state.invariantsEnabled = true;
+    state.planningAnswers = {
+      q1: 'SaaS',
+      q2: 'React + TypeScript',
+      q3: 'MUI',
+      q4: 'REST + auth',
+      q5: 'A11y + perf',
+      q6: 'unit + e2e',
+      q7: 'GitHub Actions',
+      q8: 'DoD',
+    };
+    state.stage = 'execution';
+
+    const llm = createLlmStub([
+      { text: 'Сделай приложение на GraphQL API' },
+      { text: '{"status":"failed","violatedInvariantId":"frontend_rest_only"}' },
+      { text: '{"answers":{"q4":"REST + auth + retries"}}' },
+      { text: '{"status":"passed"}' },
+      { text: 'Итоговый промпт для code assistant' },
+      { text: '{"status":"passed","violatedInvariantId":null}' },
+      { text: '{"status":"approved","reviewSummary":"Ок","issues":[],"clarificationQuestions":[]}' },
+    ]);
+
+    const blocked = await runFrontendPromptTaskTurn({
+      chatId: 'chat-5',
+      taskState: state,
+      userInput: 'запусти генерацию',
+      llmCall: llm,
+    });
+
+    expect(blocked.taskState.stage).toBe('validation');
+    expect(blocked.taskState.invariantViolation?.questionId).toBe('q4');
+    expect(blocked.assistantText).toContain('**Нарушение инварианта:**');
+
+    const resumed = await runFrontendPromptTaskTurn({
+      chatId: 'chat-5',
+      taskState: blocked.taskState,
+      userInput: '4. REST + auth + retries',
+      llmCall: llm,
+    });
+
+    expect(resumed.taskState.stage).toBe('validation');
+    expect(resumed.taskState.invariantViolation).toBeNull();
+    expect(resumed.taskState.planningAnswers.q4).toBe('REST + auth + retries');
+    expect(resumed.assistantText).toContain('**Этап задачи:** validation');
+    expect(resumed.taskState.lastGeneratedPrompt).toContain('Итоговый промпт');
   });
 });
