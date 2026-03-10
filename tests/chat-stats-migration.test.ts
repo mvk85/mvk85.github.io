@@ -40,48 +40,24 @@ beforeEach(() => {
 });
 
 describe('chat stats migration', () => {
-  it('мигрирует формат byChat+overall в новый per-chat формат', () => {
+  it('читает только актуальный формат per-chat', () => {
     localStorage.setItem(
       CHAT_STATS_STORAGE_KEY,
       JSON.stringify({
         previousBalance: 100,
         byChat: {
           'chat-1': {
-            lastResponse: {
-              model: 'gpt-5.1',
-              promptTokens: 10,
-              completionTokens: 20,
-              totalTokens: 30,
-              requestCost: 0.1,
-            },
-            items: [
-              {
-                id: 'r1',
-                chatId: 'chat-1',
-                model: 'gpt-5.1',
-                promptTokens: 10,
-                completionTokens: 20,
-                totalTokens: 30,
-                requestCost: 0.1,
-              },
-            ],
+            model: 'gpt-5.1',
             totalCost: 0.1,
             promptTokens: 10,
             completionTokens: 20,
             totalTokens: 30,
           },
         },
-        overall: {
-          totalCost: 0.1,
-          promptTokens: 10,
-          completionTokens: 20,
-          totalTokens: 30,
-          requestsCount: 1,
-        },
       }),
     );
 
-    const migrated = loadChatStats('fallback-chat');
+    const migrated = loadChatStats('chat-1');
 
     expect(migrated).toEqual({
       previousBalance: 100,
@@ -97,7 +73,7 @@ describe('chat stats migration', () => {
     });
   });
 
-  it('мигрирует старый root-формат в per-chat формат текущего чата', () => {
+  it('бросает ошибку на неактуальный формат', () => {
     localStorage.setItem(
       CHAT_STATS_STORAGE_KEY,
       JSON.stringify({
@@ -133,19 +109,6 @@ describe('chat stats migration', () => {
       }),
     );
 
-    const migrated = loadChatStats('chat-current');
-
-    expect(migrated).toEqual({
-      previousBalance: 42,
-      byChat: {
-        'chat-current': {
-          model: 'gpt-5.1',
-          totalCost: 0.05,
-          promptTokens: 7,
-          completionTokens: 11,
-          totalTokens: 18,
-        },
-      },
-    });
+    expect(() => loadChatStats('chat-current')).toThrowError('Некорректный формат chat stats');
   });
 });

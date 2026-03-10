@@ -8,7 +8,7 @@ type BalanceResponse = {
 };
 
 export const openAiProxyChatApi = {
-  createChatCompletion: async (body: ChatCompletionPayload): Promise<ChatCompletionResponse> => {
+  createChatCompletion: async (body: ChatCompletionPayload, options?: { signal?: AbortSignal }): Promise<ChatCompletionResponse> => {
     if (!env.openAiApiUrl) {
       throw new Error('Не задан VITE_OPENAI_API_URL в .env');
     }
@@ -16,18 +16,27 @@ export const openAiProxyChatApi = {
       throw new Error('Не задан VITE_OPENAI_API_KEY в .env');
     }
 
-    return postJson<ChatCompletionResponse>(env.openAiApiUrl, body, {
-      Authorization: `Bearer ${env.openAiApiKey}`,
-    });
+    return postJson<ChatCompletionResponse>(
+      env.openAiApiUrl,
+      body,
+      {
+        Authorization: `Bearer ${env.openAiApiKey}`,
+      },
+      options,
+    );
   },
-  getBalance: async (): Promise<number> => {
+  getBalance: async (options?: { signal?: AbortSignal }): Promise<number> => {
     if (!env.openAiApiKey) {
       throw new Error('Не задан VITE_OPENAI_API_KEY или VITE_PROXYAPI_API_KEY в .env');
     }
 
-    const response = await getJson<BalanceResponse>(env.proxyApiBalanceUrl, {
-      Authorization: `Bearer ${env.openAiApiKey}`,
-    });
+    const response = await getJson<BalanceResponse>(
+      env.proxyApiBalanceUrl,
+      {
+        Authorization: `Bearer ${env.openAiApiKey}`,
+      },
+      options,
+    );
 
     if (typeof response.balance !== 'number' || !Number.isFinite(response.balance)) {
       throw new Error('Сервер вернул некорректный формат баланса.');

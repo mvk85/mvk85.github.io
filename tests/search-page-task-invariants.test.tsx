@@ -79,4 +79,18 @@ describe('SearchPage task invariants', () => {
     expect(markup).not.toContain('Инварианты задачи');
     expect(markup).not.toContain('Включить инварианты');
   });
+
+  it('показывает UI-состояния загрузки и лимита сообщений', () => {
+    useChatMock.mockReturnValue({
+      ...createUseChatResult('none', false),
+      isLoading: true,
+      isLimitReached: true,
+      limitNotice: 'Лимит сообщений достигнут',
+    });
+
+    const markup = renderToStaticMarkup(<SearchPage />);
+
+    expect(markup).toContain('Думаю над ответом...');
+    expect(markup).toContain('Лимит сообщений достигнут');
+  });
 });

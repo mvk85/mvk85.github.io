@@ -37,22 +37,25 @@ export async function postJson<TResponse>(
   url: string,
   body: unknown,
   headers: Record<string, string>,
+  options?: { signal?: AbortSignal },
 ): Promise<TResponse> {
   return requestJson<TResponse>(
     url,
     {
       method: 'POST',
       body: JSON.stringify(body),
+      signal: options?.signal,
     },
     headers,
   );
 }
 
-export async function getJson<TResponse>(url: string, headers: Record<string, string>): Promise<TResponse> {
+export async function getJson<TResponse>(url: string, headers: Record<string, string>, options?: { signal?: AbortSignal }): Promise<TResponse> {
   return requestJson<TResponse>(
     url,
     {
       method: 'GET',
+      signal: options?.signal,
     },
     headers,
   );
