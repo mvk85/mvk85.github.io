@@ -33,7 +33,7 @@ const proxyApiBalanceUrl =
 const llmModelMain =
   (import.meta.env.VITE_LLM_MODEL_MAIN as string | undefined) ??
   (import.meta.env.VITE_OPENAI_MODEL as string | undefined) ??
-  'gpt-4o';
+  'gpt-5.1';
 
 const llmModelSummary = (import.meta.env.VITE_LLM_MODEL_SUMMARY as string | undefined) ?? undefined;
 const summaryChunkSize = parseIntegerEnv(import.meta.env.VITE_SUMMARY_CHUNK_SIZE as string | undefined, 5);

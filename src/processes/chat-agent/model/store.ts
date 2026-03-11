@@ -27,10 +27,14 @@ import type { ChatCompletionUsage } from '@/entities/chat-response/model/types';
 import { prependUserProfileToContext } from '@/entities/profile/lib/profilePrompt';
 import type { UserProfileId } from '@/entities/profile/model/types';
 import { FACT_EXTRACTOR_SYSTEM_PROMPT } from '@/processes/chat-agent/config/prompts';
+import { loadMcpGithubEnabled, prependMcpGithubToContext } from '@/processes/chat-agent/lib/mcpGithubPrompt';
+import { resolveMcpGithubAssistantText } from '@/processes/chat-agent/lib/mcpGithubRuntime';
 import { getChatStats, initializeChatStats, removeChatStats, saveChatStats } from '@/processes/chat-agent/lib/chatStatsStorage';
 import type { ChatAgentState, ChatStatsState, RequestStatus } from '@/processes/chat-agent/model/types';
+import { HttpError } from '@/shared/api/client';
 import { openAiProxyChatApi } from '@/shared/api/openAiProxyChatApi';
 import { env } from '@/shared/config/env';
+import { CHAT_MODEL_OPTIONS, type ChatModel } from '@/shared/config/llmModels';
 import { normalizeError } from '@/shared/lib/errors';
 
 type ChatAgentActions = {
@@ -40,6 +44,7 @@ type ChatAgentActions = {
   createBranchFromCurrentChat: () => boolean;
   setCurrentChatStrategy: (contextStrategy: ChatContextStrategy) => boolean;
   setCurrentChatProfile: (profileId: UserProfileId) => boolean;
+  setCurrentChatModel: (model: ChatModel) => boolean;
   setCurrentChatTask: (taskId: ChatTaskId) => boolean;
   setCurrentTaskInvariantsEnabled: (enabled: boolean) => boolean;
   setStrategy1WindowSize: (windowSize: number) => boolean;
@@ -71,6 +76,24 @@ function addUsage(left: ChatCompletionUsage, right: ChatCompletionUsage): ChatCo
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
+}
+
+function isServerHttpError(error: unknown): error is HttpError {
+  return error instanceof HttpError && error.status >= 400 && error.status < 600;
+}
+
+function resolveRequestCost(balanceBefore: number, balanceAfter: number): number {
+  const requestCost = balanceBefore - balanceAfter;
+  if (!isFiniteNumber(requestCost) || requestCost <= 0) {
+    console.warn('[chat-agent] cost calculation skipped: balance did not decrease', {
+      balanceBefore,
+      balanceAfter,
+      requestCost,
+    });
+    return 0;
+  }
+
+  return requestCost;
 }
 
 function extractAssistantText(response: { choices?: Array<{ message?: { content?: string | null } }> }): string {
@@ -187,6 +210,19 @@ function isAbortError(error: unknown): boolean {
   return false;
 }
 
+function resolveChatModel(statsState: ChatStatsState, chatId: string): ChatModel {
+  const currentModel = getChatStats(statsState, chatId).model;
+  if (currentModel && CHAT_MODEL_OPTIONS.includes(currentModel as ChatModel)) {
+    return currentModel as ChatModel;
+  }
+
+  if (CHAT_MODEL_OPTIONS.includes(env.llmModelMain as ChatModel)) {
+    return env.llmModelMain as ChatModel;
+  }
+
+  return CHAT_MODEL_OPTIONS[0];
+}
+
 export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
   const initialSessionsStateDiagnostics = initializeChatSessionsStateWithDiagnostics();
   const initialSessionsState = initialSessionsStateDiagnostics.state;
@@ -282,6 +318,7 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
       sendUserMessage: async () => {
         const snapshot = get();
         const normalizedInput = snapshot.inputValue.trim();
+        const selectedModel = resolveChatModel(snapshot.statsState, snapshot.currentChat.id);
         const userMessageCount = countUserMessages(snapshot.currentChat.messages);
         const isLimitReached = userMessageCount >= USER_MESSAGE_LIMIT;
         if (!normalizedInput || snapshot.status === 'loading' || isLimitReached) {
@@ -315,11 +352,7 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
 
         try {
           const currentBalanceState = get().statsState.previousBalance;
-          const balanceBefore = await (currentBalanceState === null
-            ? openAiProxyChatApi.getBalance({ signal }).catch(() => {
-                throw new Error('Баланс не получен.');
-              })
-            : Promise.resolve(currentBalanceState));
+          const balanceBefore = await (currentBalanceState === null ? openAiProxyChatApi.getBalance({ signal }) : Promise.resolve(currentBalanceState));
           if (!isRequestActive()) {
             return;
           }
@@ -333,7 +366,7 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
               taskState: chatForRequest.taskState,
               userInput: userMessage.content,
               llmCall: async (taskMessages) => {
-                const payload = buildChatCompletionPayload(taskMessages, env.llmModelMain);
+                const payload = buildChatCompletionPayload(taskMessages, selectedModel);
                 const response = await openAiProxyChatApi.createChatCompletion(payload, { signal });
                 return {
                   text: extractAssistantText(response),
@@ -359,16 +392,11 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
             nextHistoryState = syncChatToHistory(nextHistoryState, updatedCurrentChat);
             persistSessions(updatedCurrentChat, nextHistoryState);
 
-            const balanceAfter = await openAiProxyChatApi.getBalance({ signal }).catch(() => {
-              throw new Error('Баланс не получен.');
-            });
+            const balanceAfter = await openAiProxyChatApi.getBalance({ signal });
             if (!isRequestActive()) {
               return;
             }
-            const requestCost = balanceBefore - balanceAfter;
-            if (!isFiniteNumber(requestCost) || requestCost <= 0) {
-              throw new Error('Ошибка расчета стоимости запроса: баланс не уменьшился.');
-            }
+            const requestCost = resolveRequestCost(balanceBefore, balanceAfter);
 
             set((previousState) => {
               const stats = getChatStats(previousState.statsState, updatedCurrentChat.id);
@@ -379,7 +407,7 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
                   ...previousState.statsState.byChat,
                   [updatedCurrentChat.id]: {
                     ...stats,
-                    model: env.llmModelMain,
+                    model: selectedModel,
                     totalCost: stats.totalCost + requestCost,
                     promptTokens: stats.promptTokens + accumulatedUsage.prompt_tokens,
                     completionTokens: stats.completionTokens + accumulatedUsage.completion_tokens,
@@ -407,7 +435,7 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
                   content: `Извлеки факты из сообщения пользователя в формате JSON key-value.\n\nСообщение пользователя:\n${userMessage.content}`,
                 },
               ],
-              env.llmModelMain,
+              selectedModel,
             );
             const factResponse = await openAiProxyChatApi.createChatCompletion(factPayload, { signal });
             if (!isRequestActive()) {
@@ -434,7 +462,7 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
           try {
             const workingMemoryPayload = buildChatCompletionPayload(
               buildWorkingMemoryExtractionMessages(chatForRequest.messages, nextWorkingMemory),
-              env.llmModelMain,
+              selectedModel,
             );
             const workingMemoryResponse = await openAiProxyChatApi.createChatCompletion(workingMemoryPayload, { signal });
             if (!isRequestActive()) {
@@ -460,7 +488,7 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
           try {
             const longTermPayload = buildChatCompletionPayload(
               buildLongTermMemoryExtractionMessages(chatForRequest.messages, nextLongTermMemory),
-              env.llmModelMain,
+              selectedModel,
             );
             const longTermResponse = await openAiProxyChatApi.createChatCompletion(longTermPayload, { signal });
             if (!isRequestActive()) {
@@ -489,23 +517,19 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
           );
           const contextWithMemory = prependMemoryToContext(contextMessages, nextWorkingMemory, nextLongTermMemory);
           const contextWithProfile = prependUserProfileToContext(contextWithMemory, chatForRequest.profileId);
-          const payload = buildChatCompletionPayload(contextWithProfile, env.llmModelMain);
+          const contextWithMcpGithub = prependMcpGithubToContext(contextWithProfile, loadMcpGithubEnabled());
+          const payload = buildChatCompletionPayload(contextWithMcpGithub, selectedModel);
           const response = await openAiProxyChatApi.createChatCompletion(payload, { signal });
           if (!isRequestActive()) {
             return;
           }
           accumulatedUsage = addUsage(accumulatedUsage, extractUsage(response));
-          const assistantText = extractAssistantText(response);
-          const balanceAfter = await openAiProxyChatApi.getBalance({ signal }).catch(() => {
-            throw new Error('Баланс не получен.');
-          });
+          const assistantText = await resolveMcpGithubAssistantText(extractAssistantText(response), signal);
+          const balanceAfter = await openAiProxyChatApi.getBalance({ signal });
           if (!isRequestActive()) {
             return;
           }
-          const requestCost = balanceBefore - balanceAfter;
-          if (!isFiniteNumber(requestCost) || requestCost <= 0) {
-            throw new Error('Ошибка расчета стоимости запроса: баланс не уменьшился.');
-          }
+          const requestCost = resolveRequestCost(balanceBefore, balanceAfter);
 
           const assistantMessage: ChatMessage = {
             id: getNextMessageId(chatForRequest.messages),
@@ -552,6 +576,15 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
             set({
               status: 'idle',
               activeRequestId: null,
+            });
+            return;
+          }
+          if (!isServerHttpError(error)) {
+            console.warn('[chat-agent] non-http error hidden from UI', error);
+            set({
+              status: 'idle',
+              activeRequestId: null,
+              errorMessage: null,
             });
             return;
           }
@@ -643,6 +676,31 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
           profileId,
         };
         persistSessions(nextCurrentChat, currentState.chatHistory);
+        return true;
+      },
+
+      setCurrentChatModel: (model) => {
+        const currentState = get();
+        if (currentState.status === 'loading') {
+          return false;
+        }
+        if (resolveChatModel(currentState.statsState, currentState.currentChat.id) === model) {
+          return true;
+        }
+
+        const currentChatStats = getChatStats(currentState.statsState, currentState.currentChat.id);
+        const nextStatsState: ChatStatsState = {
+          ...currentState.statsState,
+          byChat: {
+            ...currentState.statsState.byChat,
+            [currentState.currentChat.id]: {
+              ...currentChatStats,
+              model,
+            },
+          },
+        };
+        saveChatStats(nextStatsState);
+        set({ statsState: nextStatsState });
         return true;
       },
 
@@ -825,10 +883,7 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
         void get()
           .refreshInitialBalance()
           .catch(() => {
-            set({
-              status: 'error',
-              errorMessage: 'Баланс не получен.',
-            });
+            console.warn('[chat-agent] initial balance refresh failed after clearChat');
           });
       },
 
@@ -874,7 +929,7 @@ export function getChatAgentDerived(state: ChatAgentStoreState) {
     currentStrategy2WindowSize: state.currentChat.strategySettings.strategy2WindowSize,
     currentChatId: state.currentChat.id,
     messages,
-    model: currentChatStats.model ?? env.llmModelMain,
+    model: resolveChatModel(state.statsState, state.currentChat.id),
     promptTokens: currentChatStats.promptTokens,
     completionTokens: currentChatStats.completionTokens,
     totalTokens: currentChatStats.totalTokens,

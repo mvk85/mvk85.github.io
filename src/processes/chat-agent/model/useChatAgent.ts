@@ -14,10 +14,7 @@ export function useChatAgent() {
     }
 
     void state.refreshInitialBalance().catch(() => {
-      chatAgentStore.setState({
-        status: 'error',
-        errorMessage: 'Баланс не получен.',
-      });
+      console.warn('[chat-agent] initial balance refresh failed on mount');
     });
   }, [state.refreshInitialBalance, state.statsState.previousBalance]);
 
@@ -36,6 +33,7 @@ export function useChatAgent() {
     memoryErrorMessage: state.memoryErrorMessage,
     sendUserMessage: state.sendUserMessage,
     setCurrentChatProfile: state.setCurrentChatProfile,
+    setCurrentChatModel: state.setCurrentChatModel,
     setCurrentChatStrategy: state.setCurrentChatStrategy,
     setCurrentChatTask: state.setCurrentChatTask,
     setCurrentTaskInvariantsEnabled: state.setCurrentTaskInvariantsEnabled,

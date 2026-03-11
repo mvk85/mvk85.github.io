@@ -29,6 +29,7 @@ import {
   TextField,
   Typography,
   InputLabel,
+  Switch,
 } from '@mui/material';
 
 import type { ChatContextStrategy, ChatSession } from '@/entities/chat/model/types';
@@ -38,6 +39,8 @@ import { MarkdownMessage } from '@/entities/chat-response/ui/MarkdownMessage';
 import { useChat } from '@/features/chat/model/useChat';
 import { PageContainer } from '@/shared/ui/PageContainer';
 import { USER_PROFILE_OPTIONS } from '@/entities/profile/lib/profileConfig';
+import { CHAT_MODEL_OPTIONS, type ChatModel } from '@/shared/config/llmModels';
+import { loadMcpGithubSettings, saveMcpGithubSettings } from '@/processes/chat-agent/lib/mcpGithubSettings';
 
 function formatRubles(value: number): string {
   return `${value.toFixed(6).replace('.', ',')} ₽`;
@@ -58,14 +61,46 @@ function formatHistoryTitle(chat: ChatSession): string {
 }
 
 type MemoryTab = 'short-term' | 'working' | 'long-term';
+type AgentSettingsTab = 'mcp';
+
+type McpGithubHealthResponse = {
+  status?: {
+    connected?: unknown;
+  };
+};
+
+function isValidHttpUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+function isMcpGithubConnected(payload: unknown): boolean {
+  if (typeof payload !== 'object' || payload === null) {
+    return false;
+  }
+
+  const response = payload as McpGithubHealthResponse;
+  return response.status?.connected === true;
+}
 
 export function SearchPage() {
+  const initialMcpGithubSettings = loadMcpGithubSettings();
   const [strategy1WindowInput, setStrategy1WindowInput] = useState('10');
   const [strategy2WindowInput, setStrategy2WindowInput] = useState('10');
   const [historyMenuAnchor, setHistoryMenuAnchor] = useState<null | HTMLElement>(null);
   const [historyMenuChatId, setHistoryMenuChatId] = useState<string | null>(null);
   const [isMemoryDrawerOpen, setIsMemoryDrawerOpen] = useState(false);
   const [activeMemoryTab, setActiveMemoryTab] = useState<MemoryTab>('short-term');
+  const [isAgentSettingsDrawerOpen, setIsAgentSettingsDrawerOpen] = useState(false);
+  const [activeAgentSettingsTab, setActiveAgentSettingsTab] = useState<AgentSettingsTab>('mcp');
+  const [isMcpGithubEnabled, setIsMcpGithubEnabled] = useState(initialMcpGithubSettings.enabled);
+  const [mcpGithubBaseUrl, setMcpGithubBaseUrl] = useState(initialMcpGithubSettings.baseUrl);
+  const [mcpGithubUsername, setMcpGithubUsername] = useState(initialMcpGithubSettings.username);
+  const [mcpGithubCheckStatus, setMcpGithubCheckStatus] = useState<'idle' | 'checking' | 'success' | 'error'>('idle');
 
   const {
     canCreateBranchFromCurrentChat,
@@ -96,6 +131,7 @@ export function SearchPage() {
     sendUserMessage,
     setCurrentChatStrategy,
     setCurrentChatProfile,
+    setCurrentChatModel,
     setCurrentChatTask,
     setCurrentTaskInvariantsEnabled,
     setStrategy1WindowSize,
@@ -119,6 +155,14 @@ export function SearchPage() {
     setStrategy2WindowInput(String(currentStrategy2WindowSize));
   }, [currentStrategy1WindowSize, currentStrategy2WindowSize, currentChatId]);
 
+  useEffect(() => {
+    saveMcpGithubSettings({
+      enabled: isMcpGithubEnabled,
+      baseUrl: mcpGithubBaseUrl,
+      username: mcpGithubUsername,
+    });
+  }, [isMcpGithubEnabled, mcpGithubBaseUrl, mcpGithubUsername]);
+
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     await sendUserMessage();
@@ -126,6 +170,9 @@ export function SearchPage() {
 
   const isSubmitDisabled = isLoading || isLimitReached || inputValue.trim().length === 0;
   const isCurrentChatEmpty = messages.length === 0;
+  const normalizedMcpGithubBaseUrl = mcpGithubBaseUrl.trim();
+  const isMcpGithubBaseUrlValid = isValidHttpUrl(normalizedMcpGithubBaseUrl);
+  const mcpGithubHealthUrl = isMcpGithubBaseUrlValid ? `${normalizedMcpGithubBaseUrl.replace(/\/+$/, '')}/github/health` : null;
 
   const handleInputKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key !== 'Enter' || !event.ctrlKey) {
@@ -152,6 +199,10 @@ export function SearchPage() {
 
   const handleTaskChange = (event: SelectChangeEvent) => {
     setCurrentChatTask(event.target.value as typeof currentChatTask);
+  };
+
+  const handleModelChange = (event: SelectChangeEvent) => {
+    setCurrentChatModel(event.target.value as ChatModel);
   };
 
   const taskInvariants = getTaskInvariants(currentChatTask);
@@ -241,6 +292,47 @@ export function SearchPage() {
     setIsMemoryDrawerOpen(false);
   };
 
+  const handleOpenAgentSettingsDrawer = () => {
+    setIsAgentSettingsDrawerOpen(true);
+  };
+
+  const handleCloseAgentSettingsDrawer = () => {
+    setIsAgentSettingsDrawerOpen(false);
+  };
+
+  const handleMcpGithubToggleChange = (enabled: boolean) => {
+    setIsMcpGithubEnabled(enabled);
+    setMcpGithubCheckStatus('idle');
+  };
+
+  const handleMcpGithubBaseUrlChange = (nextValue: string) => {
+    setMcpGithubBaseUrl(nextValue);
+    setMcpGithubCheckStatus('idle');
+  };
+
+  const handleMcpGithubUsernameChange = (nextValue: string) => {
+    setMcpGithubUsername(nextValue);
+  };
+
+  const handleCheckMcpGithubConnection = async () => {
+    if (!mcpGithubHealthUrl) {
+      return;
+    }
+
+    setMcpGithubCheckStatus('checking');
+    try {
+      const response = await fetch(mcpGithubHealthUrl, { method: 'GET' });
+      if (!response.ok) {
+        throw new Error('HTTP request failed');
+      }
+
+      const payload = (await response.json()) as unknown;
+      setMcpGithubCheckStatus(isMcpGithubConnected(payload) ? 'success' : 'error');
+    } catch {
+      setMcpGithubCheckStatus('error');
+    }
+  };
+
   return (
     <PageContainer>
       <Stack spacing={2.5}>
@@ -249,6 +341,9 @@ export function SearchPage() {
             Чат
           </Typography>
           <Stack direction="row" spacing={1} sx={{ alignSelf: { xs: 'flex-start', sm: 'center' } }}>
+            <Button variant="outlined" color="inherit" onClick={handleOpenAgentSettingsDrawer}>
+              Настройка агента
+            </Button>
             <Button variant="outlined" color="inherit" onClick={handleOpenMemoryDrawer}>
               Память
             </Button>
@@ -281,6 +376,21 @@ export function SearchPage() {
                     {USER_PROFILE_OPTIONS.map((option) => (
                       <MenuItem key={option.id} value={option.id}>
                         {option.label}
+                      </MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
+              </FormControl>
+              <FormControl>
+                <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 0.5 }}>
+                  Модель
+                </Typography>
+                <FormControl size="small" disabled={isLoading}>
+                  <InputLabel id="chat-model-select-label">LLM модель</InputLabel>
+                  <Select labelId="chat-model-select-label" label="LLM модель" value={model} onChange={handleModelChange}>
+                    {CHAT_MODEL_OPTIONS.map((modelOption) => (
+                      <MenuItem key={modelOption} value={modelOption}>
+                        {modelOption}
                       </MenuItem>
                     ))}
                   </Select>
@@ -713,6 +823,92 @@ export function SearchPage() {
                     </Stack>
                   </Paper>
                 ))}
+              </Stack>
+            ) : null}
+          </Box>
+        </Stack>
+      </Drawer>
+
+      <Drawer
+        anchor="right"
+        open={isAgentSettingsDrawerOpen}
+        onClose={handleCloseAgentSettingsDrawer}
+        ModalProps={{ keepMounted: true }}
+        sx={{
+          '& .MuiDrawer-paper': {
+            width: { xs: '100vw', sm: '66.67vw' },
+            maxWidth: '100%',
+          },
+        }}
+      >
+        <Stack sx={{ height: '100%' }}>
+          <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ px: 2, py: 1.5 }}>
+            <Typography variant="h6" fontWeight={700}>
+              Настройка агента
+            </Typography>
+            <IconButton aria-label="Закрыть настройки агента" onClick={handleCloseAgentSettingsDrawer}>
+              <CloseIcon />
+            </IconButton>
+          </Stack>
+
+          <Tabs
+            value={activeAgentSettingsTab}
+            onChange={(_, value: AgentSettingsTab) => setActiveAgentSettingsTab(value)}
+            variant="fullWidth"
+            sx={{ px: 2 }}
+          >
+            <Tab value="mcp" label="MCP" />
+          </Tabs>
+
+          <Box sx={{ flexGrow: 1, overflowY: 'auto', p: 2 }}>
+            {activeAgentSettingsTab === 'mcp' ? (
+              <Stack spacing={1.5}>
+                <Typography variant="subtitle1" fontWeight={700}>
+                  MCP
+                </Typography>
+                <FormControlLabel
+                  control={<Switch checked={isMcpGithubEnabled} onChange={(event) => handleMcpGithubToggleChange(event.target.checked)} />}
+                  label="MCP github"
+                />
+
+                {isMcpGithubEnabled ? (
+                  <Stack spacing={1}>
+                    <TextField
+                      label="Адрес mcp для github"
+                      value={mcpGithubBaseUrl}
+                      onChange={(event) => handleMcpGithubBaseUrlChange(event.target.value)}
+                      placeholder="http://localhost:3001/mcp"
+                      size="small"
+                      fullWidth
+                    />
+                    <TextField
+                      label="GitHub username"
+                      value={mcpGithubUsername}
+                      onChange={(event) => handleMcpGithubUsernameChange(event.target.value)}
+                      placeholder="mvk85"
+                      size="small"
+                      fullWidth
+                    />
+
+                    {normalizedMcpGithubBaseUrl.length > 0 && !isMcpGithubBaseUrlValid ? (
+                      <Alert severity="warning">Введите корректный URL (допускается localhost).</Alert>
+                    ) : null}
+
+                    {normalizedMcpGithubBaseUrl.length > 0 && isMcpGithubBaseUrlValid ? (
+                      <Button
+                        variant="outlined"
+                        onClick={handleCheckMcpGithubConnection}
+                        disabled={mcpGithubCheckStatus === 'checking'}
+                        sx={{ alignSelf: 'flex-start' }}
+                      >
+                        {mcpGithubCheckStatus === 'checking' ? 'Проверяем...' : 'Проверить соединение'}
+                      </Button>
+                    ) : null}
+
+                    {mcpGithubCheckStatus === 'success' ? <Alert severity="success">mcp успешно подключен</Alert> : null}
+                    {mcpGithubCheckStatus === 'error' ? <Alert severity="error">Ошибка подключения</Alert> : null}
+                  </Stack>
+                ) : null}
               </Stack>
             ) : null}
           </Box>
