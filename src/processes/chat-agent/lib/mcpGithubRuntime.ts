@@ -1,7 +1,7 @@
 import { postJson } from '@/shared/api/client';
 import { loadMcpGithubSettings } from '@/processes/chat-agent/lib/mcpGithubSettings';
 
-type McpGithubCommandValue = 'info' | 'my_repo_list' | 'search_repo';
+type McpGithubCommandValue = 'info' | 'my_repo_list' | 'search_repo' | 'get_repo_stars';
 
 type McpGithubCommand = {
   type: 'mcp';
@@ -34,6 +34,10 @@ type GithubSearchRepositoriesPayload = {
   items?: unknown;
 };
 
+type GithubRepoStarsPayload = {
+  stars_count?: unknown;
+};
+
 function stripJsonCodeFence(raw: string): string {
   const trimmed = raw.trim();
   if (!trimmed.startsWith('```') || !trimmed.endsWith('```')) {
@@ -61,7 +65,12 @@ function parseMcpGithubCommand(rawText: string): McpGithubCommand | null {
     return null;
   }
 
-  if (command.value !== 'info' && command.value !== 'my_repo_list' && command.value !== 'search_repo') {
+  if (
+    command.value !== 'info' &&
+    command.value !== 'my_repo_list' &&
+    command.value !== 'search_repo' &&
+    command.value !== 'get_repo_stars'
+  ) {
     return null;
   }
 
@@ -102,6 +111,7 @@ function formatGithubCapabilities(enabled: boolean): string {
     'MCP GitHub поддерживает:',
     '- Поиск репозитория по имени. Пример: "найди репозиторий react router в github".',
     '- Вывод списка ваших репозиториев. Пример: "выведи список моих репозиториев".',
+    '- Вывод количества звезд репозитория. Пример: "выведи количество звезд репозитория openclaw/openclaw".',
   ].join('\n');
 }
 
@@ -144,6 +154,26 @@ function extractGithubSearchPayload(response: McpInvokeResponse): GithubSearchRe
   }
 
   return parsed as GithubSearchRepositoriesPayload;
+}
+
+function extractGithubRepoStarsPayload(response: McpInvokeResponse): GithubRepoStarsPayload {
+  const textContent = response.result?.content?.find((item) => item?.type === 'text' && typeof item.text === 'string');
+  if (!textContent || typeof textContent.text !== 'string') {
+    throw new Error('MCP github вернул неожиданный формат: отсутствует result.content[].text.');
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(textContent.text);
+  } catch {
+    throw new Error('MCP github вернул невалидный JSON в result.content[].text.');
+  }
+
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error('MCP github вернул неожиданный payload количества звезд.');
+  }
+
+  return parsed as GithubRepoStarsPayload;
 }
 
 function formatRepositoryList(
@@ -189,6 +219,65 @@ async function searchRepositories(baseUrl: string, query: string, signal?: Abort
   return extractGithubSearchPayload(response);
 }
 
+function parseRepositoryOwnerAndName(query: string): { owner: string; repo: string } | null {
+  const normalized = query.trim();
+  if (!normalized) {
+    return null;
+  }
+
+  const parts = normalized.split('/');
+  if (parts.length !== 2) {
+    return null;
+  }
+
+  const owner = parts[0].trim();
+  const repo = parts[1].trim();
+  if (!owner || !repo) {
+    return null;
+  }
+
+  const allowedPartPattern = /^[A-Za-z0-9_.-]+$/;
+  if (!allowedPartPattern.test(owner) || !allowedPartPattern.test(repo)) {
+    return null;
+  }
+
+  return { owner, repo };
+}
+
+function formatMissingRepositoryForStarsMessage(): string {
+  return [
+    'Нужно указать репозиторий в формате owner/repo.',
+    'Повторите запрос и укажите имя владельца и имя репозитория (это видно в URL, например в https://github.com/openclaw/openclaw это openclaw и openclaw).',
+  ].join('\n');
+}
+
+function formatRepositoryStars(owner: string, repo: string, starsCount: number): string {
+  return [`Репозиторий: ${owner}/${repo}.`, `Количество звезд: ${starsCount}.`].join('\n');
+}
+
+async function getRepositoryStars(baseUrl: string, owner: string, repo: string, signal?: AbortSignal): Promise<number> {
+  const url = `${baseUrl}/github/tools/get_repo_stars/invoke`;
+  const response = await postJson<McpInvokeResponse>(
+    url,
+    {
+      args: {
+        owner,
+        repo,
+      },
+    },
+    {},
+    { signal },
+  );
+
+  const payload = extractGithubRepoStarsPayload(response);
+  const starsCount = payload.stars_count;
+  if (typeof starsCount !== 'number' || !Number.isFinite(starsCount)) {
+    throw new Error('MCP github вернул неожиданный payload количества звезд: отсутствует stars_count.');
+  }
+
+  return starsCount;
+}
+
 async function resolveEnabledCommand(command: McpGithubCommand, signal?: AbortSignal): Promise<string> {
   const settings = loadMcpGithubSettings();
 
@@ -212,6 +301,16 @@ async function resolveEnabledCommand(command: McpGithubCommand, signal?: AbortSi
       title: `Результаты поиска репозиториев по запросу "${query}"`,
       emptyText: `Репозитории по запросу "${query}" не найдены.`,
     });
+  }
+
+  if (command.value === 'get_repo_stars') {
+    const repositoryData = parseRepositoryOwnerAndName(command.setting.query);
+    if (!repositoryData) {
+      return formatMissingRepositoryForStarsMessage();
+    }
+
+    const starsCount = await getRepositoryStars(baseUrl, repositoryData.owner, repositoryData.repo, signal);
+    return formatRepositoryStars(repositoryData.owner, repositoryData.repo, starsCount);
   }
 
   const username = settings.username.trim();

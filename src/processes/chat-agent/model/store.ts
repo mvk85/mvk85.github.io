@@ -27,10 +27,21 @@ import type { ChatCompletionUsage } from '@/entities/chat-response/model/types';
 import { prependUserProfileToContext } from '@/entities/profile/lib/profilePrompt';
 import type { UserProfileId } from '@/entities/profile/model/types';
 import { FACT_EXTRACTOR_SYSTEM_PROMPT } from '@/processes/chat-agent/config/prompts';
+import { prependOrganizerSchedulerToContext } from '@/processes/chat-agent/lib/organizerSchedulerPrompt';
+import {
+  formatMcpDisabledForSchedulerMessage,
+  getSchedulerActionQuestion,
+  getSchedulerIntervalQuestion,
+  getSchedulerRepeatQuestion,
+  getSchedulerWizardIntroMessage,
+  parseOrganizerSchedulerCommand,
+} from '@/processes/chat-agent/lib/organizerSchedulerRuntime';
+import { loadScheduledEvents, saveScheduledEvents } from '@/processes/chat-agent/lib/schedulerStorage';
 import { loadMcpGithubEnabled, prependMcpGithubToContext } from '@/processes/chat-agent/lib/mcpGithubPrompt';
 import { resolveMcpGithubAssistantText } from '@/processes/chat-agent/lib/mcpGithubRuntime';
 import { getChatStats, initializeChatStats, removeChatStats, saveChatStats } from '@/processes/chat-agent/lib/chatStatsStorage';
 import type { ChatAgentState, ChatStatsState, RequestStatus } from '@/processes/chat-agent/model/types';
+import type { ScheduledEvent } from '@/processes/chat-agent/model/schedulerTypes';
 import { HttpError } from '@/shared/api/client';
 import { openAiProxyChatApi } from '@/shared/api/openAiProxyChatApi';
 import { env } from '@/shared/config/env';
@@ -51,6 +62,7 @@ type ChatAgentActions = {
   setStrategy2WindowSize: (windowSize: number) => boolean;
   switchToHistoryChat: (chatId: string) => void;
   deleteHistoryChat: (chatId: string) => void;
+  deleteScheduledEvent: (eventId: string) => void;
   clearChat: () => void;
   clearLongTermMemory: () => void;
   refreshInitialBalance: () => Promise<void>;
@@ -223,9 +235,31 @@ function resolveChatModel(statsState: ChatStatsState, chatId: string): ChatModel
   return CHAT_MODEL_OPTIONS[0];
 }
 
+function createScheduledEventId(): string {
+  return `sched_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function toLowerTrimmed(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function formatSchedulerCreatedMessage(event: ScheduledEvent): string {
+  const repeatText = event.repeat.mode === 'always' ? 'всегда' : `${event.repeat.totalRuns}`;
+  return `Запланированное действие создано.\nДействие: ${event.action}\nПовторений: ${repeatText}\nИнтервал: ${event.intervalSeconds} сек.\nВ левой панели можно увидеть запланированное действие.`;
+}
+
+function buildSchedulerResultMessage(action: string, result: string): string {
+  return `Сработал планировщик "${action}".\nРезультат:\n${result}`;
+}
+
+function buildSchedulerErrorMessage(action: string, errorText: string): string {
+  return `Планировщик "${action}" завершился с ошибкой: ${errorText}`;
+}
+
 export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
   const initialSessionsStateDiagnostics = initializeChatSessionsStateWithDiagnostics();
   const initialSessionsState = initialSessionsStateDiagnostics.state;
+  const initialScheduledEvents = loadScheduledEvents();
   let initialStatsErrorMessage: string | null = null;
   let initialStatsState: ChatStatsState;
   try {
@@ -239,6 +273,8 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
   }
   let requestSequence = 0;
   let activeController: AbortController | null = null;
+  let schedulerTimer: ReturnType<typeof setTimeout> | null = null;
+  let schedulerQueueActive = false;
 
   const store = createStore<ChatAgentStoreState>((set, get) => {
     const persistSessions = (nextCurrentChat: ChatSession, nextChatHistory: ChatSession[]) => {
@@ -266,6 +302,185 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
       });
     };
 
+    const persistScheduledEvents = (nextScheduledEvents: ScheduledEvent[]) => {
+      const sorted = [...nextScheduledEvents].sort((left, right) => new Date(left.nextRunAt).getTime() - new Date(right.nextRunAt).getTime());
+      saveScheduledEvents(sorted);
+      set({
+        scheduledEvents: sorted,
+      });
+    };
+
+    const appendAssistantMessageToCurrentChat = (content: string) => {
+      const currentState = get();
+      const assistantMessage: ChatMessage = {
+        id: getNextMessageId(currentState.currentChat.messages),
+        role: 'assistant',
+        content,
+      };
+      const nextCurrentChat: ChatSession = {
+        ...currentState.currentChat,
+        messages: [...currentState.currentChat.messages, assistantMessage],
+      };
+      const nextHistory = syncChatToHistory(currentState.chatHistory, nextCurrentChat);
+      persistSessions(nextCurrentChat, nextHistory);
+    };
+
+    const startSchedulerWizard = (): string => {
+      set({
+        schedulerWizard: {
+          step: 'repeat',
+          repeat: null,
+          intervalSeconds: null,
+        },
+      });
+      return getSchedulerWizardIntroMessage();
+    };
+
+    const resolveAssistantCommandText = async (
+      rawAssistantText: string,
+      signal: AbortSignal | undefined,
+      allowSchedulerWizardStart: boolean,
+    ): Promise<string | null> => {
+      const organizerCommand = parseOrganizerSchedulerCommand(rawAssistantText);
+      if (organizerCommand) {
+        if (!loadMcpGithubEnabled()) {
+          return formatMcpDisabledForSchedulerMessage();
+        }
+        if (!allowSchedulerWizardStart) {
+          return '';
+        }
+        return startSchedulerWizard();
+      }
+
+      const mcpResolved = await resolveMcpGithubAssistantText(rawAssistantText, signal);
+      const organizerFromMcp = parseOrganizerSchedulerCommand(mcpResolved);
+      if (organizerFromMcp) {
+        if (!loadMcpGithubEnabled()) {
+          return formatMcpDisabledForSchedulerMessage();
+        }
+        if (!allowSchedulerWizardStart) {
+          return '';
+        }
+        return startSchedulerWizard();
+      }
+
+      return mcpResolved;
+    };
+
+    const scheduleSchedulerTimer = () => {
+      if (schedulerTimer) {
+        clearTimeout(schedulerTimer);
+        schedulerTimer = null;
+      }
+
+      const state = get();
+      if (state.scheduledEvents.length === 0) {
+        return;
+      }
+
+      const now = Date.now();
+      const nextRunTime = Math.min(...state.scheduledEvents.map((event) => new Date(event.nextRunAt).getTime()));
+      const hasPastEvent = nextRunTime <= now;
+      const delay = hasPastEvent && state.status === 'loading' ? 1000 : Math.max(0, nextRunTime - now);
+      schedulerTimer = setTimeout(() => {
+        void runDueScheduledEvents();
+      }, Math.min(delay, 2_147_483_647));
+    };
+
+    const runScheduledEvent = async (event: ScheduledEvent) => {
+      const selectedModel = resolveChatModel(get().statsState, get().currentChat.id);
+      const signal = new AbortController().signal;
+      const contextWithProfile = prependUserProfileToContext([{ role: 'user', content: event.action }], get().currentChat.profileId);
+      const contextWithMcpGithub = prependMcpGithubToContext(contextWithProfile, loadMcpGithubEnabled());
+      const contextWithOrganizer = prependOrganizerSchedulerToContext(contextWithMcpGithub, loadMcpGithubEnabled());
+      const payload = buildChatCompletionPayload(contextWithOrganizer, selectedModel);
+
+      try {
+        const response = await openAiProxyChatApi.createChatCompletion(payload, { signal });
+        const assistantRawText = extractAssistantText(response);
+        const resolvedText = await resolveAssistantCommandText(assistantRawText, signal, true);
+        if (resolvedText && resolvedText.trim().length > 0) {
+          appendAssistantMessageToCurrentChat(buildSchedulerResultMessage(event.action, resolvedText));
+        }
+      } catch (error: unknown) {
+        const errorText = normalizeError(error);
+        appendAssistantMessageToCurrentChat(buildSchedulerErrorMessage(event.action, errorText));
+      }
+
+      set((previousState) => {
+        const currentEvent = previousState.scheduledEvents.find((item) => item.id === event.id);
+        if (!currentEvent) {
+          return {};
+        }
+
+        const now = Date.now();
+        if (currentEvent.repeat.mode === 'always') {
+          const nextEvents = previousState.scheduledEvents.map((item) =>
+            item.id === currentEvent.id
+              ? {
+                  ...item,
+                  nextRunAt: new Date(now + currentEvent.intervalSeconds * 1000).toISOString(),
+                }
+              : item,
+          );
+          saveScheduledEvents(nextEvents);
+          return { scheduledEvents: nextEvents };
+        }
+
+        if (currentEvent.repeat.remainingRuns <= 1) {
+          const nextEvents = previousState.scheduledEvents.filter((item) => item.id !== currentEvent.id);
+          saveScheduledEvents(nextEvents);
+          return { scheduledEvents: nextEvents };
+        }
+
+        const nextRemainingRuns = currentEvent.repeat.remainingRuns - 1;
+        const nextEvents = previousState.scheduledEvents.map((item) =>
+          item.id === currentEvent.id
+            ? {
+                ...item,
+                repeat: {
+                  ...currentEvent.repeat,
+                  remainingRuns: nextRemainingRuns,
+                },
+                nextRunAt: new Date(now + currentEvent.intervalSeconds * 1000).toISOString(),
+              }
+            : item,
+        );
+        saveScheduledEvents(nextEvents);
+        return { scheduledEvents: nextEvents };
+      });
+    };
+
+    const runDueScheduledEvents = async () => {
+      if (schedulerQueueActive) {
+        return;
+      }
+      schedulerQueueActive = true;
+      try {
+        // Global queue: execute only one scheduled action at a time.
+        while (true) {
+          const state = get();
+          if (state.status === 'loading') {
+            break;
+          }
+
+          const now = Date.now();
+          const dueEvents = [...state.scheduledEvents]
+            .filter((event) => new Date(event.nextRunAt).getTime() <= now)
+            .sort((left, right) => new Date(left.nextRunAt).getTime() - new Date(right.nextRunAt).getTime());
+
+          if (dueEvents.length === 0) {
+            break;
+          }
+
+          await runScheduledEvent(dueEvents[0]);
+        }
+      } finally {
+        schedulerQueueActive = false;
+        scheduleSchedulerTimer();
+      }
+    };
+
     const cancelActiveRequest = () => {
       if (activeController) {
         activeController.abort();
@@ -279,10 +494,17 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
       }
     };
 
+    setTimeout(() => {
+      scheduleSchedulerTimer();
+      void runDueScheduledEvents();
+    }, 0);
+
     return {
       inputValue: '',
       currentChat: initialSessionsState.currentChat,
       chatHistory: initialSessionsState.chatHistory,
+      scheduledEvents: initialScheduledEvents,
+      schedulerWizard: null,
       statsState: initialStatsState,
       workingMemoryByChat: loadWorkingMemoryByChat(),
       longTermMemory: loadLongTermMemory(),
@@ -342,6 +564,205 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
         };
         let nextHistoryState = syncChatToHistory(snapshot.chatHistory, currentWithUserMessage);
         persistSessions(currentWithUserMessage, nextHistoryState);
+
+        if (snapshot.schedulerWizard) {
+          const normalized = toLowerTrimmed(normalizedInput);
+          if (normalized === 'отмена') {
+            const assistantMessage: ChatMessage = {
+              id: getNextMessageId(currentWithUserMessage.messages),
+              role: 'assistant',
+              content: 'Планировщик отменен. Чат снова доступен для обычных сообщений.',
+            };
+            const updatedCurrentChat: ChatSession = {
+              ...currentWithUserMessage,
+              messages: [...currentWithUserMessage.messages, assistantMessage],
+            };
+            nextHistoryState = syncChatToHistory(nextHistoryState, updatedCurrentChat);
+            persistSessions(updatedCurrentChat, nextHistoryState);
+            set({
+              inputValue: '',
+              schedulerWizard: null,
+              status: 'success',
+              errorMessage: null,
+              memoryErrorMessage: null,
+            });
+            return;
+          }
+
+          if (snapshot.schedulerWizard.step === 'repeat') {
+            let nextRepeat: number | 'always' | null = null;
+            if (normalized === 'всегда') {
+              nextRepeat = 'always';
+            } else if (/^\d+$/.test(normalizedInput)) {
+              const parsed = Number(normalizedInput);
+              if (Number.isInteger(parsed) && parsed >= 1 && parsed <= 100) {
+                nextRepeat = parsed;
+              }
+            }
+
+            if (nextRepeat === null) {
+              const assistantMessage: ChatMessage = {
+                id: getNextMessageId(currentWithUserMessage.messages),
+                role: 'assistant',
+                content: `Некорректное значение. ${getSchedulerRepeatQuestion()}`,
+              };
+              const updatedCurrentChat: ChatSession = {
+                ...currentWithUserMessage,
+                messages: [...currentWithUserMessage.messages, assistantMessage],
+              };
+              nextHistoryState = syncChatToHistory(nextHistoryState, updatedCurrentChat);
+              persistSessions(updatedCurrentChat, nextHistoryState);
+              set({
+                inputValue: '',
+                status: 'success',
+                errorMessage: null,
+                memoryErrorMessage: null,
+              });
+              return;
+            }
+
+            const assistantMessage: ChatMessage = {
+              id: getNextMessageId(currentWithUserMessage.messages),
+              role: 'assistant',
+              content: getSchedulerIntervalQuestion(),
+            };
+            const updatedCurrentChat: ChatSession = {
+              ...currentWithUserMessage,
+              messages: [...currentWithUserMessage.messages, assistantMessage],
+            };
+            nextHistoryState = syncChatToHistory(nextHistoryState, updatedCurrentChat);
+            persistSessions(updatedCurrentChat, nextHistoryState);
+            set({
+              inputValue: '',
+              schedulerWizard: {
+                step: 'interval',
+                repeat: nextRepeat,
+                intervalSeconds: null,
+              },
+              status: 'success',
+              errorMessage: null,
+              memoryErrorMessage: null,
+            });
+            return;
+          }
+
+          if (snapshot.schedulerWizard.step === 'interval') {
+            const parsed = Number(normalizedInput);
+            const valid = Number.isInteger(parsed) && parsed >= 10 && parsed <= 86400;
+            if (!valid) {
+              const assistantMessage: ChatMessage = {
+                id: getNextMessageId(currentWithUserMessage.messages),
+                role: 'assistant',
+                content: `Некорректное значение. ${getSchedulerIntervalQuestion()}`,
+              };
+              const updatedCurrentChat: ChatSession = {
+                ...currentWithUserMessage,
+                messages: [...currentWithUserMessage.messages, assistantMessage],
+              };
+              nextHistoryState = syncChatToHistory(nextHistoryState, updatedCurrentChat);
+              persistSessions(updatedCurrentChat, nextHistoryState);
+              set({
+                inputValue: '',
+                status: 'success',
+                errorMessage: null,
+                memoryErrorMessage: null,
+              });
+              return;
+            }
+
+            const assistantMessage: ChatMessage = {
+              id: getNextMessageId(currentWithUserMessage.messages),
+              role: 'assistant',
+              content: getSchedulerActionQuestion(),
+            };
+            const updatedCurrentChat: ChatSession = {
+              ...currentWithUserMessage,
+              messages: [...currentWithUserMessage.messages, assistantMessage],
+            };
+            nextHistoryState = syncChatToHistory(nextHistoryState, updatedCurrentChat);
+            persistSessions(updatedCurrentChat, nextHistoryState);
+            set({
+              inputValue: '',
+              schedulerWizard: {
+                step: 'action',
+                repeat: snapshot.schedulerWizard.repeat,
+                intervalSeconds: parsed,
+              },
+              status: 'success',
+              errorMessage: null,
+              memoryErrorMessage: null,
+            });
+            return;
+          }
+
+          const action = normalizedInput.trim();
+          if (!action) {
+            const assistantMessage: ChatMessage = {
+              id: getNextMessageId(currentWithUserMessage.messages),
+              role: 'assistant',
+              content: `Некорректное значение. ${getSchedulerActionQuestion()}`,
+            };
+            const updatedCurrentChat: ChatSession = {
+              ...currentWithUserMessage,
+              messages: [...currentWithUserMessage.messages, assistantMessage],
+            };
+            nextHistoryState = syncChatToHistory(nextHistoryState, updatedCurrentChat);
+            persistSessions(updatedCurrentChat, nextHistoryState);
+            set({
+              inputValue: '',
+              status: 'success',
+              errorMessage: null,
+              memoryErrorMessage: null,
+            });
+            return;
+          }
+
+          const repeat = snapshot.schedulerWizard.repeat;
+          const intervalSeconds = snapshot.schedulerWizard.intervalSeconds;
+          if (repeat === null || intervalSeconds === null) {
+            set({
+              inputValue: '',
+              schedulerWizard: null,
+              status: 'error',
+              errorMessage: 'Планировщик в неконсистентном состоянии. Запустите его снова.',
+            });
+            return;
+          }
+
+          const now = Date.now();
+          const event: ScheduledEvent = {
+            id: createScheduledEventId(),
+            action,
+            intervalSeconds,
+            repeat: repeat === 'always' ? { mode: 'always' } : { mode: 'count', totalRuns: repeat, remainingRuns: repeat },
+            createdAt: new Date(now).toISOString(),
+            nextRunAt: new Date(now + intervalSeconds * 1000).toISOString(),
+          };
+          const nextEvents = [...get().scheduledEvents, event];
+          persistScheduledEvents(nextEvents);
+
+          const assistantMessage: ChatMessage = {
+            id: getNextMessageId(currentWithUserMessage.messages),
+            role: 'assistant',
+            content: formatSchedulerCreatedMessage(event),
+          };
+          const updatedCurrentChat: ChatSession = {
+            ...currentWithUserMessage,
+            messages: [...currentWithUserMessage.messages, assistantMessage],
+          };
+          nextHistoryState = syncChatToHistory(nextHistoryState, updatedCurrentChat);
+          persistSessions(updatedCurrentChat, nextHistoryState);
+          set({
+            inputValue: '',
+            schedulerWizard: null,
+            status: 'success',
+            errorMessage: null,
+            memoryErrorMessage: null,
+          });
+          scheduleSchedulerTimer();
+          return;
+        }
+
         set({
           inputValue: '',
           status: 'loading',
@@ -518,13 +939,14 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
           const contextWithMemory = prependMemoryToContext(contextMessages, nextWorkingMemory, nextLongTermMemory);
           const contextWithProfile = prependUserProfileToContext(contextWithMemory, chatForRequest.profileId);
           const contextWithMcpGithub = prependMcpGithubToContext(contextWithProfile, loadMcpGithubEnabled());
-          const payload = buildChatCompletionPayload(contextWithMcpGithub, selectedModel);
+          const contextWithOrganizer = prependOrganizerSchedulerToContext(contextWithMcpGithub, loadMcpGithubEnabled());
+          const payload = buildChatCompletionPayload(contextWithOrganizer, selectedModel);
           const response = await openAiProxyChatApi.createChatCompletion(payload, { signal });
           if (!isRequestActive()) {
             return;
           }
           accumulatedUsage = addUsage(accumulatedUsage, extractUsage(response));
-          const assistantText = await resolveMcpGithubAssistantText(extractAssistantText(response), signal);
+          const assistantText = await resolveAssistantCommandText(extractAssistantText(response), signal, true);
           const balanceAfter = await openAiProxyChatApi.getBalance({ signal });
           if (!isRequestActive()) {
             return;
@@ -534,7 +956,7 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
           const assistantMessage: ChatMessage = {
             id: getNextMessageId(chatForRequest.messages),
             role: 'assistant',
-            content: assistantText,
+            content: assistantText ?? '',
           };
           const updatedCurrentChat: ChatSession = {
             ...chatForRequest,
@@ -596,6 +1018,7 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
         } finally {
           if (get().activeRequestId === null) {
             activeController = null;
+            void runDueScheduledEvents();
           }
         }
       },
@@ -858,6 +1281,16 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
         });
       },
 
+      deleteScheduledEvent: (eventId) => {
+        const currentState = get();
+        const nextEvents = currentState.scheduledEvents.filter((event) => event.id !== eventId);
+        if (nextEvents.length === currentState.scheduledEvents.length) {
+          return;
+        }
+        persistScheduledEvents(nextEvents);
+        scheduleSchedulerTimer();
+      },
+
       clearChat: () => {
         cancelActiveRequest();
         const currentState = get();
@@ -928,6 +1361,7 @@ export function getChatAgentDerived(state: ChatAgentStoreState) {
     currentStrategy1WindowSize: state.currentChat.strategySettings.strategy1WindowSize,
     currentStrategy2WindowSize: state.currentChat.strategySettings.strategy2WindowSize,
     currentChatId: state.currentChat.id,
+    scheduledEvents: state.scheduledEvents,
     messages,
     model: resolveChatModel(state.statsState, state.currentChat.id),
     promptTokens: currentChatStats.promptTokens,

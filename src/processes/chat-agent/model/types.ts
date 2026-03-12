@@ -1,4 +1,5 @@
 import type { ChatSession, LongTermMemoryItem, WorkingMemory } from '@/entities/chat/model/types';
+import type { ScheduledEvent, SchedulerWizardState } from '@/processes/chat-agent/model/schedulerTypes';
 
 export type RequestStatus = 'idle' | 'loading' | 'success' | 'error';
 
@@ -19,6 +20,8 @@ export type ChatAgentState = {
   inputValue: string;
   currentChat: ChatSession;
   chatHistory: ChatSession[];
+  scheduledEvents: ScheduledEvent[];
+  schedulerWizard: SchedulerWizardState | null;
   statsState: ChatStatsState;
   workingMemoryByChat: Record<string, WorkingMemory>;
   longTermMemory: LongTermMemoryItem[];

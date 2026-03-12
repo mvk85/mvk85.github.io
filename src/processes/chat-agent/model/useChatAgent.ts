@@ -25,6 +25,7 @@ export function useChatAgent() {
     chatHistory: state.chatHistory,
     createBranchFromCurrentChat: state.createBranchFromCurrentChat,
     createNewChat: state.createNewChat,
+    deleteScheduledEvent: state.deleteScheduledEvent,
     deleteHistoryChat: state.deleteHistoryChat,
     errorMessage: state.errorMessage,
     inputValue: state.inputValue,

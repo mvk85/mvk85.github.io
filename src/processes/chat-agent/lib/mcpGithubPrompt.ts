@@ -18,7 +18,7 @@ mcp_github_enabled = ${enabled ? 'true' : 'false'}
 {
   "type": "mcp",
   "method": "github",
-  "value": "info | my_repo_list | search_repo",
+  "value": "info | my_repo_list | search_repo | get_repo_stars",
   "setting": {
     "enable": ${enabled ? 'true' : 'false'},
     "query": ""
@@ -30,6 +30,8 @@ mcp_github_enabled = ${enabled ? 'true' : 'false'}
   Примеры: "ты можешь работать github", "ты можешь изменять github", "что ты можешь делать с github", "что ты можешь делать c github".
 - value="my_repo_list": просьба вывести список репозиториев пользователя.
 - value="search_repo": просьба найти репозиторий по имени (имя непустое, минимум одно слово; положи его в setting.query).
+- value="get_repo_stars": просьба вывести количество звезд одного конкретного репозитория (положи в setting.query строку owner/repo).
+  Примеры: "выведи количество звезд репозитория openclaw/openclaw", "запроси для репозитория openclaw/openclaw количество звезд".
 
 Правила для value="search_repo":
 - Если пользователь просит "найти/поискать/вывести репозиторий" в GitHub, это считается search_repo.
@@ -39,6 +41,12 @@ mcp_github_enabled = ${enabled ? 'true' : 'false'}
 - Пример: "найди мне репозиторий backend на гитхабе" -> setting.query = "backend".
 - Пример: "найди репозиторий react router в github" -> setting.query = "react router".
 - Только если нельзя извлечь ни одного слова для query, не возвращай JSON и задай уточнение.
+
+Правила для value="get_repo_stars":
+- Используй get_repo_stars, когда пользователь просит количество звезд для одного репозитория.
+- Извлекай setting.query строго в формате owner/repo.
+- Если в сообщении нет однозначного owner/repo, не возвращай JSON и попроси повторить запрос с форматом owner/repo.
+- Пример: "сколько звезд у openclaw/openclaw" -> setting.query = "openclaw/openclaw".
 
 Если запрос не GitHub-сценарий или сценарий неоднозначен:
 - не возвращай JSON в формате mcp;

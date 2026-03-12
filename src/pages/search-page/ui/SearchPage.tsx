@@ -33,6 +33,7 @@ import {
 } from '@mui/material';
 
 import type { ChatContextStrategy, ChatSession } from '@/entities/chat/model/types';
+import type { ScheduledEvent } from '@/processes/chat-agent/model/schedulerTypes';
 import { USER_MESSAGE_LIMIT } from '@/entities/chat/lib/constants';
 import { CHAT_TASK_OPTIONS, getTaskInvariants } from '@/entities/chat/lib/taskConfig';
 import { MarkdownMessage } from '@/entities/chat-response/ui/MarkdownMessage';
@@ -58,6 +59,26 @@ function formatHistoryTitle(chat: ChatSession): string {
 
   const compact = firstMessage.content.replace(/\s+/g, ' ').trim();
   return compact.length > 42 ? `${compact.slice(0, 42)}...` : compact;
+}
+
+function formatDateTime(value: string): string {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) {
+    return value;
+  }
+
+  return new Intl.DateTimeFormat('ru-RU', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(date);
+}
+
+function formatScheduledEventTitle(event: ScheduledEvent): string {
+  const repeatText = event.repeat.mode === 'always' ? 'всегда' : `${event.repeat.totalRuns}`;
+  return `${event.action} • повторений: ${repeatText} • ${formatDateTime(event.createdAt)}`;
 }
 
 type MemoryTab = 'short-term' | 'working' | 'long-term';
@@ -101,6 +122,7 @@ export function SearchPage() {
   const [mcpGithubBaseUrl, setMcpGithubBaseUrl] = useState(initialMcpGithubSettings.baseUrl);
   const [mcpGithubUsername, setMcpGithubUsername] = useState(initialMcpGithubSettings.username);
   const [mcpGithubCheckStatus, setMcpGithubCheckStatus] = useState<'idle' | 'checking' | 'success' | 'error'>('idle');
+  const [isScheduledListCollapsed, setIsScheduledListCollapsed] = useState(false);
 
   const {
     canCreateBranchFromCurrentChat,
@@ -114,6 +136,7 @@ export function SearchPage() {
     currentStrategy1WindowSize,
     currentStrategy2WindowSize,
     currentChatId,
+    deleteScheduledEvent,
     deleteHistoryChat,
     errorMessage,
     inputValue,
@@ -129,6 +152,7 @@ export function SearchPage() {
     longTermMemory,
     memoryErrorMessage,
     sendUserMessage,
+    scheduledEvents,
     setCurrentChatStrategy,
     setCurrentChatProfile,
     setCurrentChatModel,
@@ -142,6 +166,7 @@ export function SearchPage() {
     userMessageCount,
     workingMemory,
   } = useChat();
+  const safeScheduledEvents = scheduledEvents ?? [];
 
   const endOfMessagesRef = useRef<HTMLDivElement | null>(null);
   const chatPaneHeight = { xs: '50vh', sm: '58vh', md: '62vh' };
@@ -575,6 +600,74 @@ export function SearchPage() {
                     </IconButton>
                   </Box>
                 ))}
+
+                <Box sx={{ mt: 1.25 }}>
+                  <Stack direction="row" alignItems="center" justifyContent="space-between">
+                    <Typography variant="subtitle2" fontWeight={700}>
+                      Запланированные события
+                    </Typography>
+                    <IconButton size="small" onClick={() => setIsScheduledListCollapsed((value) => !value)}>
+                      <ExpandMoreIcon
+                        sx={{
+                          transform: isScheduledListCollapsed ? 'rotate(-90deg)' : 'rotate(0deg)',
+                          transition: 'transform 120ms linear',
+                        }}
+                      />
+                    </IconButton>
+                  </Stack>
+
+                  {!isScheduledListCollapsed ? (
+                    <Stack spacing={0.5} sx={{ mt: 0.5 }}>
+                      {safeScheduledEvents.length === 0 ? (
+                        <Typography variant="body2" color="text.secondary">
+                          Событий пока нет.
+                        </Typography>
+                      ) : null}
+                      {safeScheduledEvents.map((event) => (
+                        <Box
+                          key={event.id}
+                          sx={{
+                            position: 'relative',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 0.5,
+                            px: 0.75,
+                            py: 0.25,
+                            borderRadius: 1,
+                            backgroundColor: 'transparent',
+                            '&:hover': {
+                              backgroundColor: 'action.hover',
+                            },
+                          }}
+                        >
+                          <Typography
+                            variant="caption"
+                            sx={{
+                              flexGrow: 1,
+                              whiteSpace: 'normal',
+                              wordBreak: 'break-word',
+                              color: 'text.primary',
+                              fontWeight: 500,
+                            }}
+                          >
+                            {formatScheduledEventTitle(event)}
+                          </Typography>
+                          <IconButton
+                            size="small"
+                            sx={{ p: 0.35 }}
+                            onClick={() => {
+                              if (window.confirm('Удалить запланированное действие?')) {
+                                deleteScheduledEvent(event.id);
+                              }
+                            }}
+                          >
+                            <DeleteOutlineIcon fontSize="small" />
+                          </IconButton>
+                        </Box>
+                      ))}
+                    </Stack>
+                  ) : null}
+                </Box>
               </Stack>
             </Paper>
 

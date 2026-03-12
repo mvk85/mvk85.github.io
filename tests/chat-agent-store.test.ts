@@ -275,4 +275,77 @@ describe('chat agent store', () => {
     expect(assistantMessage?.content).toContain('[mvk85/backend_challenge](https://github.com/mvk85/backend_challenge)');
     expect(assistantMessage?.content).not.toContain('"type":"mcp"');
   });
+
+  it('handles MCP github get_repo_stars JSON response and renders stars count', async () => {
+    const { createChatAgentStore } = await import('../src/processes/chat-agent/model/store');
+    getBalanceMock.mockResolvedValueOnce(100).mockResolvedValueOnce(99);
+
+    localStorage.setItem(
+      'mcp_github_settings_v1',
+      JSON.stringify({
+        enabled: true,
+        baseUrl: 'http://localhost:3001/mcp',
+      }),
+    );
+
+    createChatCompletionMock
+      .mockResolvedValueOnce({
+        choices: [{ message: { content: '{"goal":"g","tasks":[],"current_focus":"f","constraints":[],"updated_at":"2026-03-11T00:00:00.000Z"}' } }],
+        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+      })
+      .mockResolvedValueOnce({
+        choices: [{ message: { content: '{"items":[]}' } }],
+        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+      })
+      .mockResolvedValueOnce({
+        choices: [
+          {
+            message: {
+              content:
+                '{"type":"mcp","method":"github","value":"get_repo_stars","setting":{"enable":true,"query":"openclaw/openclaw"}}',
+            },
+          },
+        ],
+        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+      });
+
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      text: async () =>
+        JSON.stringify({
+          result: {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  stars_count: 305110,
+                }),
+              },
+            ],
+          },
+        }),
+    });
+
+    const store = createChatAgentStore();
+    store.getState().setInputValue('выведи количество звезд репозитория openclaw/openclaw');
+    await store.getState().sendUserMessage();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('http://localhost:3001/mcp/github/tools/get_repo_stars/invoke');
+    expect(init.method).toBe('POST');
+    expect(String(init.body)).toContain('"owner":"openclaw"');
+    expect(String(init.body)).toContain('"repo":"openclaw"');
+
+    const assistantMessages = store
+      .getState()
+      .currentChat.messages.filter((message) => message.role === 'assistant');
+    const assistantMessage = assistantMessages[assistantMessages.length - 1];
+
+    expect(assistantMessage?.content).toContain('Репозиторий: openclaw/openclaw.');
+    expect(assistantMessage?.content).toContain('Количество звезд: 305110.');
+    expect(assistantMessage?.content).not.toContain('"type":"mcp"');
+  });
 });

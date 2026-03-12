@@ -22,8 +22,11 @@
   Примеры: «github выведи список репозиториев», «выведи список моих гитхаб репозиториев», «выведи список моих репозиториев».
 - `value = "search_repo"`: пользователь просит найти репозиторий по имени.
   Примеры: «github найди репозиторий», «найди репозиторий <name_repo> в гитхабе», «выведи репозиторий <name_repo>».
+- `value = "get_repo_stars"`: пользователь просит количество звезд одного конкретного репозитория.
+  Примеры: «выведи количество звезд репозитория openclaw/openclaw», «мне нужно количество звезд для репозитория openclaw/openclaw».
 
 Для `search_repo` имя репозитория должно быть непустым и содержать минимум одно слово.
+Для `get_repo_stars` `setting.query` должен быть в формате `owner/repo`.
 
 Дополнительные правила для `search_repo`:
 - Если пользователь просит "найти/поискать/вывести репозиторий" в GitHub, трактуй это как `search_repo`.
@@ -33,6 +36,12 @@
 - Пример: «найди мне репозиторий backend на гитхабе» -> `setting.query = "backend"`.
 - Пример: «найди репозиторий react router в github» -> `setting.query = "react router"`.
 - Только если не удается извлечь ни одного слова для `query`, не возвращай JSON и запроси уточнение обычным текстом.
+
+Дополнительные правила для `get_repo_stars`:
+- Если пользователь просит количество звезд одного репозитория, трактуй это как `get_repo_stars`.
+- Извлекай `setting.query` строго как `owner/repo`.
+- Пример: «сколько звезд у openclaw/openclaw» -> `setting.query = "openclaw/openclaw"`.
+- Если невозможно однозначно извлечь `owner/repo`, не возвращай JSON и попроси пользователя повторить запрос с форматом `owner/repo`.
 
 ## 3) Когда НЕ нужно возвращать JSON
 
@@ -50,7 +59,7 @@
 {
   "type": "mcp",
   "method": "github",
-  "value": "info | my_repo_list | search_repo",
+  "value": "info | my_repo_list | search_repo | get_repo_stars",
   "setting": {
     "enable": true,
     "query": ""
@@ -61,10 +70,11 @@
 Правила полей:
 - `type` всегда `"mcp"`.
 - `method` всегда `"github"`.
-- `value` одно из: `"info"`, `"my_repo_list"`, `"search_repo"`.
+- `value` одно из: `"info"`, `"my_repo_list"`, `"search_repo"`, `"get_repo_stars"`.
 - `setting.enable` всегда отражает `mcp_github_enabled` из system-контекста.
 - `setting.query`:
   - для `search_repo`: строка запроса репозитория (непустая, минимум одно слово);
+  - для `get_repo_stars`: строка `owner/repo`;
   - для `info` и `my_repo_list`: пустая строка `""`.
 
 Важно:
