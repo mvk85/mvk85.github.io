@@ -348,4 +348,94 @@ describe('chat agent store', () => {
     expect(assistantMessage?.content).toContain('Количество звезд: 305110.');
     expect(assistantMessage?.content).not.toContain('"type":"mcp"');
   });
+
+  it('handles MCP pipeline repo_issue_report JSON response and renders download link', async () => {
+    const { createChatAgentStore } = await import('../src/processes/chat-agent/model/store');
+    getBalanceMock.mockResolvedValueOnce(100).mockResolvedValueOnce(99);
+
+    localStorage.setItem(
+      'mcp_github_settings_v1',
+      JSON.stringify({
+        enabled: true,
+        baseUrl: 'http://localhost:3001/mcp',
+      }),
+    );
+
+    createChatCompletionMock
+      .mockResolvedValueOnce({
+        choices: [{ message: { content: '{"goal":"g","tasks":[],"current_focus":"f","constraints":[],"updated_at":"2026-03-11T00:00:00.000Z"}' } }],
+        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+      })
+      .mockResolvedValueOnce({
+        choices: [{ message: { content: '{"items":[]}' } }],
+        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+      })
+      .mockResolvedValueOnce({
+        choices: [
+          {
+            message: {
+              content:
+                '{"type":"mcp","method":"pipeline","value":"repo_issue_report","setting":{"owner":"openclaw","repo":"openclaw"}}',
+            },
+          },
+        ],
+        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+      });
+
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        text: async () =>
+          JSON.stringify({
+            result: {
+              content: [
+                {
+                  type: 'text',
+                  text: JSON.stringify({
+                    items: [{ number: 1, title: 'Bug #1' }],
+                  }),
+                },
+              ],
+            },
+          }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        text: async () =>
+          JSON.stringify({
+            result: {
+              structuredContent: {
+                downloadUrl: 'http://localhost:3001/downloads/openclaw_openclaw_issues.txt',
+              },
+            },
+          }),
+      });
+
+    const store = createChatAgentStore();
+    store.getState().setInputValue('сделай отчет по issue репозитория openclaw/openclaw');
+    await store.getState().sendUserMessage();
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [firstUrl, firstInit] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(firstUrl).toBe('http://localhost:3001/mcp/github/tools/list_issues/invoke');
+    expect(String(firstInit.body)).toContain('"owner":"openclaw"');
+    expect(String(firstInit.body)).toContain('"repo":"openclaw"');
+
+    const [secondUrl, secondInit] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(secondUrl).toBe('http://localhost:3001/mcp/file-tools/tools/save_text_to_file/invoke');
+    expect(String(secondInit.body)).toContain('"fileName":"openclaw_openclaw_issues"');
+
+    const assistantMessages = store
+      .getState()
+      .currentChat.messages.filter((message) => message.role === 'assistant');
+    const assistantMessage = assistantMessages[assistantMessages.length - 1];
+
+    expect(assistantMessage?.content).toContain('Отчет по issue сформирован.');
+    expect(assistantMessage?.content).toContain('http://localhost:3001/downloads/openclaw_openclaw_issues.txt');
+    expect(assistantMessage?.content).not.toContain('"type":"mcp"');
+  });
 });

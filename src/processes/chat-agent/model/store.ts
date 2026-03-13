@@ -39,6 +39,8 @@ import {
 import { loadScheduledEvents, saveScheduledEvents } from '@/processes/chat-agent/lib/schedulerStorage';
 import { loadMcpGithubEnabled, prependMcpGithubToContext } from '@/processes/chat-agent/lib/mcpGithubPrompt';
 import { resolveMcpGithubAssistantText } from '@/processes/chat-agent/lib/mcpGithubRuntime';
+import { prependMcpPipelineGithubIssuesToContext } from '@/processes/chat-agent/lib/mcpPipelineGithubIssuesPrompt';
+import { resolveMcpPipelineAssistantText } from '@/processes/chat-agent/lib/mcpPipelineGithubIssuesRuntime';
 import { getChatStats, initializeChatStats, removeChatStats, saveChatStats } from '@/processes/chat-agent/lib/chatStatsStorage';
 import type { ChatAgentState, ChatStatsState, RequestStatus } from '@/processes/chat-agent/model/types';
 import type { ScheduledEvent } from '@/processes/chat-agent/model/schedulerTypes';
@@ -340,6 +342,7 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
       rawAssistantText: string,
       signal: AbortSignal | undefined,
       allowSchedulerWizardStart: boolean,
+      onPipelineStepStart?: (stepName: string) => void,
     ): Promise<string | null> => {
       const organizerCommand = parseOrganizerSchedulerCommand(rawAssistantText);
       if (organizerCommand) {
@@ -352,7 +355,10 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
         return startSchedulerWizard();
       }
 
-      const mcpResolved = await resolveMcpGithubAssistantText(rawAssistantText, signal);
+      const pipelineResolved = await resolveMcpPipelineAssistantText(rawAssistantText, signal, {
+        onStepStart: onPipelineStepStart,
+      });
+      const mcpResolved = await resolveMcpGithubAssistantText(pipelineResolved, signal);
       const organizerFromMcp = parseOrganizerSchedulerCommand(mcpResolved);
       if (organizerFromMcp) {
         if (!loadMcpGithubEnabled()) {
@@ -391,14 +397,17 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
       const selectedModel = resolveChatModel(get().statsState, get().currentChat.id);
       const signal = new AbortController().signal;
       const contextWithProfile = prependUserProfileToContext([{ role: 'user', content: event.action }], get().currentChat.profileId);
-      const contextWithMcpGithub = prependMcpGithubToContext(contextWithProfile, loadMcpGithubEnabled());
+      const contextWithMcpPipeline = prependMcpPipelineGithubIssuesToContext(contextWithProfile, loadMcpGithubEnabled());
+      const contextWithMcpGithub = prependMcpGithubToContext(contextWithMcpPipeline, loadMcpGithubEnabled());
       const contextWithOrganizer = prependOrganizerSchedulerToContext(contextWithMcpGithub, loadMcpGithubEnabled());
       const payload = buildChatCompletionPayload(contextWithOrganizer, selectedModel);
 
       try {
         const response = await openAiProxyChatApi.createChatCompletion(payload, { signal });
         const assistantRawText = extractAssistantText(response);
-        const resolvedText = await resolveAssistantCommandText(assistantRawText, signal, true);
+        const resolvedText = await resolveAssistantCommandText(assistantRawText, signal, true, (stepName) => {
+          appendAssistantMessageToCurrentChat(`Выполняется шаг pipeline: ${stepName}...`);
+        });
         if (resolvedText && resolvedText.trim().length > 0) {
           appendAssistantMessageToCurrentChat(buildSchedulerResultMessage(event.action, resolvedText));
         }
@@ -490,6 +499,7 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
         set({
           activeRequestId: null,
           status: 'idle',
+          showThinkingLoader: true,
         });
       }
     };
@@ -515,6 +525,7 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
       memoryErrorMessage: null,
       hasChatsWithoutStrategy: initialSessionsStateDiagnostics.hasChatsWithoutStrategy,
       activeRequestId: null,
+      showThinkingLoader: true,
 
       setInputValue: (value) => {
         set({ inputValue: value });
@@ -769,6 +780,7 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
           errorMessage: null,
           memoryErrorMessage: null,
           activeRequestId: requestId,
+          showThinkingLoader: true,
         });
 
         try {
@@ -841,6 +853,7 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
                 statsState: nextStatsState,
                 status: 'success',
                 activeRequestId: null,
+                showThinkingLoader: true,
               };
             });
             activeController = null;
@@ -938,7 +951,8 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
           );
           const contextWithMemory = prependMemoryToContext(contextMessages, nextWorkingMemory, nextLongTermMemory);
           const contextWithProfile = prependUserProfileToContext(contextWithMemory, chatForRequest.profileId);
-          const contextWithMcpGithub = prependMcpGithubToContext(contextWithProfile, loadMcpGithubEnabled());
+          const contextWithMcpPipeline = prependMcpPipelineGithubIssuesToContext(contextWithProfile, loadMcpGithubEnabled());
+          const contextWithMcpGithub = prependMcpGithubToContext(contextWithMcpPipeline, loadMcpGithubEnabled());
           const contextWithOrganizer = prependOrganizerSchedulerToContext(contextWithMcpGithub, loadMcpGithubEnabled());
           const payload = buildChatCompletionPayload(contextWithOrganizer, selectedModel);
           const response = await openAiProxyChatApi.createChatCompletion(payload, { signal });
@@ -946,7 +960,13 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
             return;
           }
           accumulatedUsage = addUsage(accumulatedUsage, extractUsage(response));
-          const assistantText = await resolveAssistantCommandText(extractAssistantText(response), signal, true);
+          const assistantText = await resolveAssistantCommandText(extractAssistantText(response), signal, true, (stepName) => {
+            if (!isRequestActive()) {
+              return;
+            }
+            set({ showThinkingLoader: false });
+            appendAssistantMessageToCurrentChat(`Выполняется шаг pipeline: ${stepName}...`);
+          });
           const balanceAfter = await openAiProxyChatApi.getBalance({ signal });
           if (!isRequestActive()) {
             return;
@@ -987,6 +1007,7 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
               statsState: nextStatsState,
               status: 'success',
               activeRequestId: null,
+              showThinkingLoader: true,
             };
           });
           activeController = null;
@@ -998,6 +1019,7 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
             set({
               status: 'idle',
               activeRequestId: null,
+              showThinkingLoader: true,
             });
             return;
           }
@@ -1007,6 +1029,7 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
               status: 'idle',
               activeRequestId: null,
               errorMessage: null,
+              showThinkingLoader: true,
             });
             return;
           }
@@ -1014,6 +1037,7 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
             status: 'error',
             activeRequestId: null,
             errorMessage: normalizeError(error),
+            showThinkingLoader: true,
           });
         } finally {
           if (get().activeRequestId === null) {
@@ -1372,6 +1396,7 @@ export function getChatAgentDerived(state: ChatAgentStoreState) {
     userMessageCount,
     isLimitReached,
     limitNotice: isLimitReached ? LIMIT_REACHED_TEXT : null,
+    showThinkingLoader: state.showThinkingLoader,
   };
 }
 

@@ -115,7 +115,7 @@ function formatGithubCapabilities(enabled: boolean): string {
   ].join('\n');
 }
 
-function formatMcpDisabledMessage(): string {
+export function formatMcpDisabledMessage(): string {
   return ['Для работы с GitHub включите MCP в настройках агента и повторите запрос.', '', formatGithubCapabilities(false)].join('\n');
 }
 

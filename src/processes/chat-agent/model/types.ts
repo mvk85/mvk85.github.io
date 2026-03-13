@@ -30,4 +30,5 @@ export type ChatAgentState = {
   memoryErrorMessage: string | null;
   hasChatsWithoutStrategy: boolean;
   activeRequestId: number | null;
+  showThinkingLoader: boolean;
 };

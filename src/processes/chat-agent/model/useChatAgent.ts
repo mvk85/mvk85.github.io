@@ -41,6 +41,7 @@ export function useChatAgent() {
     setInputValue: state.setInputValue,
     setStrategy1WindowSize: state.setStrategy1WindowSize,
     setStrategy2WindowSize: state.setStrategy2WindowSize,
+    showThinkingLoader: derived.showThinkingLoader,
     status: state.status,
     switchToHistoryChat: state.switchToHistoryChat,
   };

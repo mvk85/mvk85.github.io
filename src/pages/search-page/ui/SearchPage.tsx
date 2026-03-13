@@ -142,6 +142,7 @@ export function SearchPage() {
     inputValue,
     isLimitReached,
     isLoading,
+    showThinkingLoader,
     limitNotice,
     messages,
     model,
@@ -735,7 +736,7 @@ export function SearchPage() {
                   );
                 })}
 
-                {isLoading ? (
+                {isLoading && showThinkingLoader ? (
                   <Box
                     sx={{
                       alignSelf: 'flex-start',
