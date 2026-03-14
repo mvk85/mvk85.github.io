@@ -349,7 +349,7 @@ describe('chat agent store', () => {
     expect(assistantMessage?.content).not.toContain('"type":"mcp"');
   });
 
-  it('handles MCP pipeline repo_issue_report JSON response and renders download link', async () => {
+  it('asks summary clarification for issue report and runs default pipeline when user answers "нет"', async () => {
     const { createChatAgentStore } = await import('../src/processes/chat-agent/model/store');
     getBalanceMock.mockResolvedValueOnce(100).mockResolvedValueOnce(99);
 
@@ -382,6 +382,17 @@ describe('chat agent store', () => {
         usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
       });
 
+    const store = createChatAgentStore();
+    store.getState().setInputValue('сделай отчет по issue репозитория openclaw/openclaw');
+    await store.getState().sendUserMessage();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    let assistantMessages = store
+      .getState()
+      .currentChat.messages.filter((message) => message.role === 'assistant');
+    let assistantMessage = assistantMessages[assistantMessages.length - 1];
+    expect(assistantMessage?.content).toContain('Нужна ли какая-то суммаризация по отчету');
+
     fetchMock
       .mockResolvedValueOnce({
         ok: true,
@@ -394,7 +405,7 @@ describe('chat agent store', () => {
                 {
                   type: 'text',
                   text: JSON.stringify({
-                    items: [{ number: 1, title: 'Bug #1' }],
+                    issues: [{ id: 1, title: 'Bug #1' }],
                   }),
                 },
               ],
@@ -415,8 +426,7 @@ describe('chat agent store', () => {
           }),
       });
 
-    const store = createChatAgentStore();
-    store.getState().setInputValue('сделай отчет по issue репозитория openclaw/openclaw');
+    store.getState().setInputValue('нет');
     await store.getState().sendUserMessage();
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -429,10 +439,10 @@ describe('chat agent store', () => {
     expect(secondUrl).toBe('http://localhost:3001/mcp/file-tools/tools/save_text_to_file/invoke');
     expect(String(secondInit.body)).toContain('"fileName":"openclaw_openclaw_issues"');
 
-    const assistantMessages = store
+    assistantMessages = store
       .getState()
       .currentChat.messages.filter((message) => message.role === 'assistant');
-    const assistantMessage = assistantMessages[assistantMessages.length - 1];
+    assistantMessage = assistantMessages[assistantMessages.length - 1];
 
     expect(assistantMessage?.content).toContain('Отчет по issue сформирован.');
     expect(assistantMessage?.content).toContain('http://localhost:3001/downloads/openclaw_openclaw_issues.txt');

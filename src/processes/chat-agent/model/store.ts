@@ -40,9 +40,11 @@ import { loadScheduledEvents, saveScheduledEvents } from '@/processes/chat-agent
 import { loadMcpGithubEnabled, prependMcpGithubToContext } from '@/processes/chat-agent/lib/mcpGithubPrompt';
 import { resolveMcpGithubAssistantText } from '@/processes/chat-agent/lib/mcpGithubRuntime';
 import { prependMcpPipelineGithubIssuesToContext } from '@/processes/chat-agent/lib/mcpPipelineGithubIssuesPrompt';
-import { resolveMcpPipelineAssistantText } from '@/processes/chat-agent/lib/mcpPipelineGithubIssuesRuntime';
+import {
+  resolveMcpPipelineAssistantCommand,
+} from '@/processes/chat-agent/lib/mcpPipelineGithubIssuesRuntime';
 import { getChatStats, initializeChatStats, removeChatStats, saveChatStats } from '@/processes/chat-agent/lib/chatStatsStorage';
-import type { ChatAgentState, ChatStatsState, RequestStatus } from '@/processes/chat-agent/model/types';
+import type { ChatAgentState, ChatStatsState, PendingIssueReportSummaryState, RequestStatus } from '@/processes/chat-agent/model/types';
 import type { ScheduledEvent } from '@/processes/chat-agent/model/schedulerTypes';
 import { HttpError } from '@/shared/api/client';
 import { openAiProxyChatApi } from '@/shared/api/openAiProxyChatApi';
@@ -71,6 +73,11 @@ type ChatAgentActions = {
 };
 
 export type ChatAgentStoreState = ChatAgentState & ChatAgentActions;
+
+type AssistantCommandResolution = {
+  text: string | null;
+  pendingIssueReportSummary: PendingIssueReportSummaryState | null;
+};
 
 function createEmptyUsage(): ChatCompletionUsage {
   return {
@@ -245,6 +252,18 @@ function toLowerTrimmed(value: string): string {
   return value.trim().toLowerCase();
 }
 
+function buildRepoIssuePipelineCommand(owner: string, repo: string): string {
+  return JSON.stringify({
+    type: 'mcp',
+    method: 'pipeline',
+    value: 'repo_issue_report',
+    setting: {
+      owner,
+      repo,
+    },
+  });
+}
+
 function formatSchedulerCreatedMessage(event: ScheduledEvent): string {
   const repeatText = event.repeat.mode === 'always' ? 'всегда' : `${event.repeat.totalRuns}`;
   return `Запланированное действие создано.\nДействие: ${event.action}\nПовторений: ${repeatText}\nИнтервал: ${event.intervalSeconds} сек.\nВ левой панели можно увидеть запланированное действие.`;
@@ -342,35 +361,72 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
       rawAssistantText: string,
       signal: AbortSignal | undefined,
       allowSchedulerWizardStart: boolean,
+      allowIssueReportSummaryQuestion: boolean,
       onPipelineStepStart?: (stepName: string) => void,
-    ): Promise<string | null> => {
+    ): Promise<AssistantCommandResolution> => {
       const organizerCommand = parseOrganizerSchedulerCommand(rawAssistantText);
       if (organizerCommand) {
         if (!loadMcpGithubEnabled()) {
-          return formatMcpDisabledForSchedulerMessage();
+          return {
+            text: formatMcpDisabledForSchedulerMessage(),
+            pendingIssueReportSummary: null,
+          };
         }
         if (!allowSchedulerWizardStart) {
-          return '';
+          return {
+            text: '',
+            pendingIssueReportSummary: null,
+          };
         }
-        return startSchedulerWizard();
+        return {
+          text: startSchedulerWizard(),
+          pendingIssueReportSummary: null,
+        };
       }
 
-      const pipelineResolved = await resolveMcpPipelineAssistantText(rawAssistantText, signal, {
+      const pipelineResolved = await resolveMcpPipelineAssistantCommand(rawAssistantText, signal, {
         onStepStart: onPipelineStepStart,
+        requestSummaryPrompt: allowIssueReportSummaryQuestion,
       });
-      const mcpResolved = await resolveMcpGithubAssistantText(pipelineResolved, signal);
-      const organizerFromMcp = parseOrganizerSchedulerCommand(mcpResolved);
+      if (pipelineResolved.kind === 'needs_summary_prompt') {
+        return {
+          text: pipelineResolved.pending.question,
+          pendingIssueReportSummary: {
+            owner: pipelineResolved.pending.owner,
+            repo: pipelineResolved.pending.repo,
+          },
+        };
+      }
+
+      const mcpResolved = await resolveMcpGithubAssistantText(pipelineResolved.text, signal);
+      return resolveOrganizerFromText(mcpResolved, allowSchedulerWizardStart);
+    };
+
+    const resolveOrganizerFromText = (text: string, allowSchedulerWizardStart: boolean): AssistantCommandResolution => {
+      const organizerFromMcp = parseOrganizerSchedulerCommand(text);
       if (organizerFromMcp) {
         if (!loadMcpGithubEnabled()) {
-          return formatMcpDisabledForSchedulerMessage();
+          return {
+            text: formatMcpDisabledForSchedulerMessage(),
+            pendingIssueReportSummary: null,
+          };
         }
         if (!allowSchedulerWizardStart) {
-          return '';
+          return {
+            text: '',
+            pendingIssueReportSummary: null,
+          };
         }
-        return startSchedulerWizard();
+        return {
+          text: startSchedulerWizard(),
+          pendingIssueReportSummary: null,
+        };
       }
 
-      return mcpResolved;
+      return {
+        text,
+        pendingIssueReportSummary: null,
+      };
     };
 
     const scheduleSchedulerTimer = () => {
@@ -405,11 +461,11 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
       try {
         const response = await openAiProxyChatApi.createChatCompletion(payload, { signal });
         const assistantRawText = extractAssistantText(response);
-        const resolvedText = await resolveAssistantCommandText(assistantRawText, signal, true, (stepName) => {
+        const resolved = await resolveAssistantCommandText(assistantRawText, signal, true, false, (stepName) => {
           appendAssistantMessageToCurrentChat(`Выполняется шаг pipeline: ${stepName}...`);
         });
-        if (resolvedText && resolvedText.trim().length > 0) {
-          appendAssistantMessageToCurrentChat(buildSchedulerResultMessage(event.action, resolvedText));
+        if (resolved.text && resolved.text.trim().length > 0) {
+          appendAssistantMessageToCurrentChat(buildSchedulerResultMessage(event.action, resolved.text));
         }
       } catch (error: unknown) {
         const errorText = normalizeError(error);
@@ -515,6 +571,7 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
       chatHistory: initialSessionsState.chatHistory,
       scheduledEvents: initialScheduledEvents,
       schedulerWizard: null,
+      pendingIssueReportSummaryByChat: {},
       statsState: initialStatsState,
       workingMemoryByChat: loadWorkingMemoryByChat(),
       longTermMemory: loadLongTermMemory(),
@@ -774,6 +831,96 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
           return;
         }
 
+        const pendingIssueReportSummary = snapshot.pendingIssueReportSummaryByChat[snapshot.currentChat.id] ?? null;
+        if (pendingIssueReportSummary) {
+          set({
+            inputValue: '',
+            status: 'loading',
+            errorMessage: null,
+            memoryErrorMessage: null,
+            activeRequestId: requestId,
+            showThinkingLoader: true,
+          });
+
+          try {
+            const pipelineResult = await resolveMcpPipelineAssistantCommand(
+              buildRepoIssuePipelineCommand(pendingIssueReportSummary.owner, pendingIssueReportSummary.repo),
+              signal,
+              {
+                summaryPrompt: normalizedInput,
+                onStepStart: (stepName) => {
+                  if (!isRequestActive()) {
+                    return;
+                  }
+                  set({ showThinkingLoader: false });
+                  appendAssistantMessageToCurrentChat(`Выполняется шаг pipeline: ${stepName}...`);
+                },
+              },
+            );
+            if (!isRequestActive()) {
+              return;
+            }
+
+            const assistantText = pipelineResult.kind === 'text' ? pipelineResult.text : pipelineResult.pending.question;
+            const assistantMessage: ChatMessage = {
+              id: getNextMessageId(currentWithUserMessage.messages),
+              role: 'assistant',
+              content: assistantText,
+            };
+            const updatedCurrentChat: ChatSession = {
+              ...currentWithUserMessage,
+              messages: [...currentWithUserMessage.messages, assistantMessage],
+            };
+            nextHistoryState = syncChatToHistory(nextHistoryState, updatedCurrentChat);
+            persistSessions(updatedCurrentChat, nextHistoryState);
+
+            set((previousState) => ({
+              pendingIssueReportSummaryByChat: Object.fromEntries(
+                Object.entries(previousState.pendingIssueReportSummaryByChat).filter(([chatId]) => chatId !== updatedCurrentChat.id),
+              ),
+              status: 'success',
+              activeRequestId: null,
+              showThinkingLoader: true,
+            }));
+            activeController = null;
+            return;
+          } catch (error: unknown) {
+            if (!isRequestActive()) {
+              return;
+            }
+            if (isAbortError(error)) {
+              set({
+                status: 'idle',
+                activeRequestId: null,
+                showThinkingLoader: true,
+              });
+              return;
+            }
+            if (!isServerHttpError(error)) {
+              console.warn('[chat-agent] non-http error hidden from UI', error);
+              set({
+                status: 'idle',
+                activeRequestId: null,
+                errorMessage: null,
+                showThinkingLoader: true,
+              });
+              return;
+            }
+            set({
+              status: 'error',
+              activeRequestId: null,
+              errorMessage: normalizeError(error),
+              showThinkingLoader: true,
+            });
+            return;
+          } finally {
+            if (get().activeRequestId === null) {
+              activeController = null;
+              void runDueScheduledEvents();
+            }
+          }
+        }
+
         set({
           inputValue: '',
           status: 'loading',
@@ -960,7 +1107,7 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
             return;
           }
           accumulatedUsage = addUsage(accumulatedUsage, extractUsage(response));
-          const assistantText = await resolveAssistantCommandText(extractAssistantText(response), signal, true, (stepName) => {
+          const resolvedAssistant = await resolveAssistantCommandText(extractAssistantText(response), signal, true, true, (stepName) => {
             if (!isRequestActive()) {
               return;
             }
@@ -976,7 +1123,7 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
           const assistantMessage: ChatMessage = {
             id: getNextMessageId(chatForRequest.messages),
             role: 'assistant',
-            content: assistantText ?? '',
+            content: resolvedAssistant.text ?? '',
           };
           const updatedCurrentChat: ChatSession = {
             ...chatForRequest,
@@ -1003,8 +1150,17 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
               },
             };
             saveChatStats(nextStatsState);
+            const nextPendingIssueReportSummaryByChat = resolvedAssistant.pendingIssueReportSummary
+              ? {
+                  ...previousState.pendingIssueReportSummaryByChat,
+                  [updatedCurrentChat.id]: resolvedAssistant.pendingIssueReportSummary,
+                }
+              : Object.fromEntries(
+                  Object.entries(previousState.pendingIssueReportSummaryByChat).filter(([chatId]) => chatId !== updatedCurrentChat.id),
+                );
             return {
               statsState: nextStatsState,
+              pendingIssueReportSummaryByChat: nextPendingIssueReportSummaryByChat,
               status: 'success',
               activeRequestId: null,
               showThinkingLoader: true,

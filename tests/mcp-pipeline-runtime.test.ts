@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { resolveMcpPipelineAssistantText } from '../src/processes/chat-agent/lib/mcpPipelineGithubIssuesRuntime';
+import {
+  resolveMcpPipelineAssistantCommand,
+  resolveMcpPipelineAssistantText,
+} from '../src/processes/chat-agent/lib/mcpPipelineGithubIssuesRuntime';
 
 const fetchMock = vi.fn();
 
@@ -77,6 +80,30 @@ describe('mcp pipeline runtime repo_issue_report', () => {
 
     expect(fetchMock).not.toHaveBeenCalled();
     expect(text).toContain('Не хватает полей: owner.');
+  });
+
+  it('returns summary clarification request when enabled by caller', async () => {
+    localStorage.setItem(
+      'mcp_github_settings_v1',
+      JSON.stringify({
+        enabled: true,
+        baseUrl: 'http://localhost:3001/mcp',
+      }),
+    );
+
+    const result = await resolveMcpPipelineAssistantCommand(
+      '{"type":"mcp","method":"pipeline","value":"repo_issue_report","setting":{"owner":"openclaw","repo":"openclaw"}}',
+      undefined,
+      { requestSummaryPrompt: true },
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result.kind).toBe('needs_summary_prompt');
+    if (result.kind === 'needs_summary_prompt') {
+      expect(result.pending.owner).toBe('openclaw');
+      expect(result.pending.repo).toBe('openclaw');
+      expect(result.pending.question).toContain('Нужна ли какая-то суммаризация по отчету');
+    }
   });
 
   it('runs github list_issues and file save_text_to_file and returns download link', async () => {
@@ -187,6 +214,80 @@ describe('mcp pipeline runtime repo_issue_report', () => {
     expect(stepStart).toHaveBeenCalledTimes(2);
     expect(stepStart).toHaveBeenNthCalledWith(1, 'mcp_github(list_issues)');
     expect(stepStart).toHaveBeenNthCalledWith(2, 'mcp_file(save_text_to_file)');
+  });
+
+  it('runs summary step when summary prompt is provided', async () => {
+    localStorage.setItem(
+      'mcp_github_settings_v1',
+      JSON.stringify({
+        enabled: true,
+        baseUrl: 'http://localhost:3001/mcp',
+      }),
+    );
+
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        text: async () =>
+          JSON.stringify({
+            result: {
+              content: [
+                {
+                  type: 'text',
+                  text: '{"issues":[{"id":1,"title":"bug"}]}',
+                },
+              ],
+            },
+          }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        text: async () =>
+          JSON.stringify({
+            result: {
+              structuredContent: {
+                summary: 'theme: auth\nКоличество: 1',
+              },
+            },
+          }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        text: async () =>
+          JSON.stringify({
+            result: {
+              structuredContent: {
+                downloadUrl: 'http://localhost:3001/downloads/openclaw_openclaw_issues.txt',
+              },
+            },
+          }),
+      });
+
+    const stepStart = vi.fn();
+    const text = await resolveMcpPipelineAssistantText(
+      '{"type":"mcp","method":"pipeline","value":"repo_issue_report","setting":{"owner":"openclaw","repo":"openclaw"}}',
+      undefined,
+      { onStepStart: stepStart, summaryPrompt: 'Сделай суммаризацию по theme' },
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(stepStart).toHaveBeenCalledTimes(3);
+    expect(stepStart).toHaveBeenNthCalledWith(2, 'mcp_summary(summary_json)');
+
+    const [summaryUrl, summaryInit] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(summaryUrl).toBe('http://localhost:3001/mcp/llm/tools/summary_json/invoke');
+    expect(String(summaryInit.body)).toContain('"prompt":"Сделай суммаризацию по theme"');
+
+    const [fileUrl, fileInit] = fetchMock.mock.calls[2] as [string, RequestInit];
+    expect(fileUrl).toBe('http://localhost:3001/mcp/file-tools/tools/save_text_to_file/invoke');
+    expect(String(fileInit.body)).toContain('theme: auth');
+    expect(text).toContain('Отчет по issue сформирован.');
   });
 
   it('stops pipeline and reports failing step', async () => {

@@ -45,6 +45,13 @@ type ListIssuesOutput = {
   owner: string;
   repo: string;
   text: string;
+  issues: unknown[];
+};
+
+type SummaryOutput = {
+  owner: string;
+  repo: string;
+  text: string;
 };
 
 type SaveFileOutput = {
@@ -53,7 +60,29 @@ type SaveFileOutput = {
 
 type ResolvePipelineOptions = {
   onStepStart?: (stepName: string) => void;
+  summaryPrompt?: string;
+  requestSummaryPrompt?: boolean;
 };
+
+export type PendingIssueReportSummary = {
+  owner: string;
+  repo: string;
+  question: string;
+};
+
+export type ResolveMcpPipelineResult =
+  | {
+      kind: 'text';
+      text: string;
+    }
+  | {
+      kind: 'needs_summary_prompt';
+      pending: PendingIssueReportSummary;
+    };
+
+const SUMMARY_DECLINE_PATTERNS = new Set(['нет', 'no']);
+const SUMMARY_QUESTION =
+  'Нужна ли какая-то суммаризация по отчету, например "Сделай суммаризацию по полю theme: количество, основные проблемы и приоритеты.". Если не нужна, то напиши просто "нет"';
 
 function stripJsonCodeFence(raw: string): string {
   const trimmed = raw.trim();
@@ -101,6 +130,19 @@ function toNonEmptyTrimmedString(value: unknown): string | null {
 
   const normalized = value.trim();
   return normalized.length > 0 ? normalized : null;
+}
+
+function shouldRunSummaryStep(summaryPrompt: string | undefined): boolean {
+  if (!summaryPrompt) {
+    return false;
+  }
+
+  const normalized = summaryPrompt.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+
+  return !SUMMARY_DECLINE_PATTERNS.has(normalized);
 }
 
 function validateOwnerAndRepo(setting: McpPipelineCommand['setting']): { owner: string; repo: string; missingFields: string[] } {
@@ -184,6 +226,68 @@ function extractDownloadUrl(response: McpInvokeResponse): string {
   return urlFromText;
 }
 
+function extractIssuesFromListPayload(textPayload: string): unknown[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(textPayload);
+  } catch {
+    throw new Error('MCP github вернул невалидный JSON с issue для pipeline.');
+  }
+
+  if (Array.isArray(parsed)) {
+    return parsed;
+  }
+
+  if (typeof parsed !== 'object' || parsed === null) {
+    throw new Error('MCP github вернул неожиданный payload issue: ожидается объект или массив.');
+  }
+
+  const issues = (parsed as { issues?: unknown }).issues;
+  if (!Array.isArray(issues)) {
+    throw new Error('MCP github вернул неожиданный payload issue: отсутствует массив issues.');
+  }
+
+  return issues;
+}
+
+function extractSummaryText(response: McpInvokeResponse): string {
+  const structured = response.result?.structuredContent;
+  if (typeof structured === 'object' && structured !== null && !Array.isArray(structured)) {
+    const summary = (structured as { summary?: unknown }).summary;
+    if (typeof summary === 'string' && summary.trim().length > 0) {
+      return summary.trim();
+    }
+  }
+
+  const rawStructured = response.result?.raw?.structuredContent;
+  if (typeof rawStructured === 'object' && rawStructured !== null && !Array.isArray(rawStructured)) {
+    const summary = (rawStructured as { summary?: unknown }).summary;
+    if (typeof summary === 'string' && summary.trim().length > 0) {
+      return summary.trim();
+    }
+  }
+
+  const textPayload = extractTextContent(response, 'MCP summary_json');
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(textPayload);
+  } catch {
+    if (textPayload.trim().length > 0) {
+      return textPayload.trim();
+    }
+    throw new Error('MCP summary_json вернул пустой текстовый payload.');
+  }
+
+  if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+    const summary = (parsed as { summary?: unknown }).summary;
+    if (typeof summary === 'string' && summary.trim().length > 0) {
+      return summary.trim();
+    }
+  }
+
+  throw new Error('MCP summary_json вернул неожиданный payload: отсутствует summary.');
+}
+
 async function runPipeline<TInput, TOutput>(
   steps: Array<PipelineStep<unknown, unknown>>,
   initialInput: TInput,
@@ -226,10 +330,37 @@ async function invokeGithubListIssues(baseUrl: string, input: ListIssuesInput, s
     owner: input.owner,
     repo: input.repo,
     text,
+    issues: extractIssuesFromListPayload(text),
   };
 }
 
-async function invokeFileSaveText(baseUrl: string, input: ListIssuesOutput, signal?: AbortSignal): Promise<SaveFileOutput> {
+async function invokeSummaryJson(
+  baseUrl: string,
+  input: ListIssuesOutput,
+  summaryPrompt: string,
+  signal?: AbortSignal,
+): Promise<SummaryOutput> {
+  const url = `${baseUrl}/llm/tools/summary_json/invoke`;
+  const response = await postJson<McpInvokeResponse>(
+    url,
+    {
+      args: {
+        issues: input.issues,
+        prompt: summaryPrompt,
+      },
+    },
+    {},
+    { signal },
+  );
+
+  return {
+    owner: input.owner,
+    repo: input.repo,
+    text: extractSummaryText(response),
+  };
+}
+
+async function invokeFileSaveText(baseUrl: string, input: { owner: string; repo: string; text: string }, signal?: AbortSignal): Promise<SaveFileOutput> {
   const url = `${baseUrl}/file-tools/tools/save_text_to_file/invoke`;
   const response = await postJson<McpInvokeResponse>(
     url,
@@ -263,41 +394,71 @@ function formatIssueReportSuccess(downloadUrl: string): string {
   ].join('\n');
 }
 
-export async function resolveMcpPipelineAssistantText(
+export async function resolveMcpPipelineAssistantCommand(
   rawAssistantText: string,
   signal?: AbortSignal,
   options?: ResolvePipelineOptions,
-): Promise<string> {
+): Promise<ResolveMcpPipelineResult> {
   const command = parseMcpPipelineCommand(rawAssistantText);
   if (!command) {
-    return rawAssistantText;
+    return {
+      kind: 'text',
+      text: rawAssistantText,
+    };
   }
 
   const settings = loadMcpGithubSettings();
   if (!settings.enabled) {
-    return formatMcpDisabledMessage();
+    return {
+      kind: 'text',
+      text: formatMcpDisabledMessage(),
+    };
   }
 
   const baseUrl = normalizeBaseUrl(settings.baseUrl);
   if (!baseUrl) {
-    return 'Укажите корректный адрес MCP GitHub в настройках агента и повторите запрос.';
+    return {
+      kind: 'text',
+      text: 'Укажите корректный адрес MCP GitHub в настройках агента и повторите запрос.',
+    };
   }
 
   const validated = validateOwnerAndRepo(command.setting);
   if (validated.missingFields.length > 0) {
-    return formatMissingSettingMessage(validated.missingFields);
+    return {
+      kind: 'text',
+      text: formatMissingSettingMessage(validated.missingFields),
+    };
   }
 
+  if (options?.requestSummaryPrompt) {
+    return {
+      kind: 'needs_summary_prompt',
+      pending: {
+        owner: validated.owner,
+        repo: validated.repo,
+        question: SUMMARY_QUESTION,
+      },
+    };
+  }
+
+  const shouldSummarize = shouldRunSummaryStep(options?.summaryPrompt);
   const steps: Array<PipelineStep<unknown, unknown>> = [
     {
       name: 'mcp_github(list_issues)',
       run: async (input, currentSignal) => invokeGithubListIssues(baseUrl, input as ListIssuesInput, currentSignal),
     },
-    {
-      name: 'mcp_file(save_text_to_file)',
-      run: async (input, currentSignal) => invokeFileSaveText(baseUrl, input as ListIssuesOutput, currentSignal),
-    },
   ];
+  if (shouldSummarize && options?.summaryPrompt) {
+    steps.push({
+      name: 'mcp_summary(summary_json)',
+      run: async (input, currentSignal) => invokeSummaryJson(baseUrl, input as ListIssuesOutput, options.summaryPrompt as string, currentSignal),
+    });
+  }
+  steps.push({
+    name: 'mcp_file(save_text_to_file)',
+    run: async (input, currentSignal) => invokeFileSaveText(baseUrl, input as { owner: string; repo: string; text: string }, currentSignal),
+  });
 
   try {
     const result = await runPipeline<ListIssuesInput, SaveFileOutput>(
@@ -310,9 +471,32 @@ export async function resolveMcpPipelineAssistantText(
       signal,
     );
 
-    return formatIssueReportSuccess(result.downloadUrl);
+    return {
+      kind: 'text',
+      text: formatIssueReportSuccess(result.downloadUrl),
+    };
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Неизвестная ошибка';
-    return `Не удалось выполнить pipeline repo_issue_report: ${message}`;
+    return {
+      kind: 'text',
+      text: `Не удалось выполнить pipeline repo_issue_report: ${message}`,
+    };
   }
+}
+
+export async function resolveMcpPipelineAssistantText(
+  rawAssistantText: string,
+  signal?: AbortSignal,
+  options?: Omit<ResolvePipelineOptions, 'requestSummaryPrompt'>,
+): Promise<string> {
+  const result = await resolveMcpPipelineAssistantCommand(rawAssistantText, signal, {
+    ...options,
+    requestSummaryPrompt: false,
+  });
+
+  if (result.kind === 'needs_summary_prompt') {
+    return result.pending.question;
+  }
+
+  return result.text;
 }
