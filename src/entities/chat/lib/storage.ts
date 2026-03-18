@@ -5,6 +5,7 @@ type StoredChatMessage = {
   id?: unknown;
   role?: unknown;
   content?: unknown;
+  rag?: unknown;
 };
 
 function isValidRole(value: unknown): value is ChatMessage['role'] {
@@ -23,11 +24,59 @@ function normalizeChatMessage(value: unknown, fallbackId: number): ChatMessage |
   }
 
   const id = typeof candidate.id === 'number' && Number.isInteger(candidate.id) && candidate.id > 0 ? candidate.id : fallbackId;
+  let rag: ChatMessage['rag'];
+  if (typeof candidate.rag === 'object' && candidate.rag !== null && !Array.isArray(candidate.rag)) {
+    const ragCandidate = candidate.rag as { used?: unknown; sources?: unknown };
+    if (typeof ragCandidate.used === 'boolean' && Array.isArray(ragCandidate.sources)) {
+      const normalizedSources = ragCandidate.sources
+        .map((source) => {
+          if (typeof source !== 'object' || source === null || Array.isArray(source)) {
+            return null;
+          }
+          const candidateSource = source as {
+            file?: unknown;
+            section?: unknown;
+            chunkId?: unknown;
+            indexId?: unknown;
+            score?: unknown;
+            title?: unknown;
+            strategy?: unknown;
+          };
+          if (
+            typeof candidateSource.file !== 'string' ||
+            typeof candidateSource.section !== 'string' ||
+            typeof candidateSource.chunkId !== 'string' ||
+            typeof candidateSource.indexId !== 'string' ||
+            (candidateSource.score !== null && typeof candidateSource.score !== 'number') ||
+            typeof candidateSource.title !== 'string' ||
+            typeof candidateSource.strategy !== 'string'
+          ) {
+            return null;
+          }
+          return {
+            file: candidateSource.file,
+            section: candidateSource.section,
+            chunkId: candidateSource.chunkId,
+            indexId: candidateSource.indexId,
+            score: typeof candidateSource.score === 'number' ? candidateSource.score : null,
+            title: candidateSource.title,
+            strategy: candidateSource.strategy,
+          };
+        })
+        .filter((item): item is NonNullable<typeof item> => Boolean(item));
+
+      rag = {
+        used: ragCandidate.used,
+        sources: normalizedSources,
+      };
+    }
+  }
 
   return {
     id,
     role: candidate.role,
     content: candidate.content.trim(),
+    ...(rag ? { rag } : {}),
   };
 }
 

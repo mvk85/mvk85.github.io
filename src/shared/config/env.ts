@@ -40,6 +40,8 @@ const summaryChunkSize = parseIntegerEnv(import.meta.env.VITE_SUMMARY_CHUNK_SIZE
 const summaryKeepLast = parseIntegerEnv(import.meta.env.VITE_SUMMARY_KEEP_LAST as string | undefined, 5);
 const summaryEnabledDefault = parseBooleanEnv(import.meta.env.VITE_SUMMARY_ENABLED_DEFAULT as string | undefined, false);
 const summaryLanguage = (import.meta.env.VITE_SUMMARY_LANGUAGE as string | undefined) ?? 'ru';
+const ragApiBaseUrl =
+  (import.meta.env.VITE_RAG_API_BASE_URL as string | undefined)?.trim() || 'http://localhost:5001';
 
 export const env = {
   openAiApiKey,
@@ -51,4 +53,5 @@ export const env = {
   summaryKeepLast,
   summaryEnabledDefault,
   summaryLanguage,
+  ragApiBaseUrl,
 };

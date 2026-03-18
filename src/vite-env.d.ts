@@ -14,6 +14,7 @@ interface ImportMetaEnv {
   readonly VITE_SUMMARY_KEEP_LAST?: string;
   readonly VITE_SUMMARY_ENABLED_DEFAULT?: string;
   readonly VITE_SUMMARY_LANGUAGE?: string;
+  readonly VITE_RAG_API_BASE_URL?: string;
 }
 
 interface ImportMeta {

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type MouseEvent } from 'react';
+import { useEffect, useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent, type MouseEvent } from 'react';
 import CloseIcon from '@mui/icons-material/Close';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
@@ -32,7 +32,7 @@ import {
   Switch,
 } from '@mui/material';
 
-import type { ChatContextStrategy, ChatSession } from '@/entities/chat/model/types';
+import type { ChatContextStrategy, ChatMessageRagSource, ChatSession } from '@/entities/chat/model/types';
 import type { ScheduledEvent } from '@/processes/chat-agent/model/schedulerTypes';
 import { USER_MESSAGE_LIMIT } from '@/entities/chat/lib/constants';
 import { CHAT_TASK_OPTIONS, getTaskInvariants } from '@/entities/chat/lib/taskConfig';
@@ -42,6 +42,10 @@ import { PageContainer } from '@/shared/ui/PageContainer';
 import { USER_PROFILE_OPTIONS } from '@/entities/profile/lib/profileConfig';
 import { CHAT_MODEL_OPTIONS, type ChatModel } from '@/shared/config/llmModels';
 import { loadMcpGithubSettings, saveMcpGithubSettings } from '@/processes/chat-agent/lib/mcpGithubSettings';
+import { DEFAULT_RAG_MIN_SCORE, DEFAULT_RAG_TOP_K, loadRagSettings, saveRagSettings } from '@/processes/chat-agent/lib/ragSettings';
+import { ragApi, type RagHealthResponse, type RagIndexListItem } from '@/shared/api/ragApi';
+import { env } from '@/shared/config/env';
+import { normalizeError } from '@/shared/lib/errors';
 
 function formatRubles(value: number): string {
   return `${value.toFixed(6).replace('.', ',')} ₽`;
@@ -81,14 +85,21 @@ function formatScheduledEventTitle(event: ScheduledEvent): string {
   return `${event.action} • повторений: ${repeatText} • ${formatDateTime(event.createdAt)}`;
 }
 
+function formatRagSourceKey(source: ChatMessageRagSource, index: number): string {
+  const base = source.chunkId || source.indexId || source.file || String(index);
+  return `${base}_${index}`;
+}
+
 type MemoryTab = 'short-term' | 'working' | 'long-term';
-type AgentSettingsTab = 'mcp';
+type AgentSettingsTab = 'mcp' | 'rag';
 
 type McpGithubHealthResponse = {
   status?: {
     connected?: unknown;
   };
 };
+
+type RagConnectionStatus = 'idle' | 'checking' | 'success' | 'error';
 
 function isValidHttpUrl(value: string): boolean {
   try {
@@ -108,8 +119,27 @@ function isMcpGithubConnected(payload: unknown): boolean {
   return response.status?.connected === true;
 }
 
+function isRagHealthy(payload: unknown): boolean {
+  if (typeof payload !== 'object' || payload === null) {
+    return false;
+  }
+
+  const response = payload as RagHealthResponse;
+  return response.status === 'ok';
+}
+
+function isRagEmbeddingsConfigured(payload: unknown): boolean {
+  if (typeof payload !== 'object' || payload === null) {
+    return false;
+  }
+
+  const response = payload as RagHealthResponse;
+  return response.embeddings?.configured === true;
+}
+
 export function SearchPage() {
   const initialMcpGithubSettings = loadMcpGithubSettings();
+  const initialRagSettings = loadRagSettings();
   const [strategy1WindowInput, setStrategy1WindowInput] = useState('10');
   const [strategy2WindowInput, setStrategy2WindowInput] = useState('10');
   const [historyMenuAnchor, setHistoryMenuAnchor] = useState<null | HTMLElement>(null);
@@ -118,6 +148,21 @@ export function SearchPage() {
   const [activeMemoryTab, setActiveMemoryTab] = useState<MemoryTab>('short-term');
   const [isAgentSettingsDrawerOpen, setIsAgentSettingsDrawerOpen] = useState(false);
   const [activeAgentSettingsTab, setActiveAgentSettingsTab] = useState<AgentSettingsTab>('mcp');
+  const [isRagEnabled, setIsRagEnabled] = useState(initialRagSettings.enabled);
+  const [ragBaseUrl, setRagBaseUrl] = useState(initialRagSettings.baseUrl || env.ragApiBaseUrl);
+  const [ragCheckStatus, setRagCheckStatus] = useState<RagConnectionStatus>('idle');
+  const [ragCheckMessage, setRagCheckMessage] = useState<string | null>(null);
+  const [ragStrategy, setRagStrategy] = useState<'fixed' | 'structured'>('structured');
+  const [ragSelectedFile, setRagSelectedFile] = useState<File | null>(null);
+  const [ragFileActionStatus, setRagFileActionStatus] = useState<'idle' | 'processing' | 'success' | 'error'>('idle');
+  const [ragFileActionMessage, setRagFileActionMessage] = useState<string | null>(null);
+  const [ragIndexes, setRagIndexes] = useState<RagIndexListItem[]>([]);
+  const [ragIndexesStatus, setRagIndexesStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
+  const [ragIndexesErrorMessage, setRagIndexesErrorMessage] = useState<string | null>(null);
+  const [ragDeletingIndexId, setRagDeletingIndexId] = useState<string | null>(null);
+  const [ragSelectedIndexIds, setRagSelectedIndexIds] = useState<string[]>(initialRagSettings.selectedIndexIds);
+  const [ragMinScoreInput, setRagMinScoreInput] = useState(String(initialRagSettings.minScore));
+  const [ragTopKInput, setRagTopKInput] = useState(String(initialRagSettings.topK || DEFAULT_RAG_TOP_K));
   const [isMcpGithubEnabled, setIsMcpGithubEnabled] = useState(initialMcpGithubSettings.enabled);
   const [mcpGithubBaseUrl, setMcpGithubBaseUrl] = useState(initialMcpGithubSettings.baseUrl);
   const [mcpGithubUsername, setMcpGithubUsername] = useState(initialMcpGithubSettings.username);
@@ -152,6 +197,7 @@ export function SearchPage() {
     totalTokens,
     longTermMemory,
     memoryErrorMessage,
+    ragWarningMessage,
     sendUserMessage,
     scheduledEvents,
     setCurrentChatStrategy,
@@ -170,6 +216,7 @@ export function SearchPage() {
   const safeScheduledEvents = scheduledEvents ?? [];
 
   const endOfMessagesRef = useRef<HTMLDivElement | null>(null);
+  const ragFileInputRef = useRef<HTMLInputElement | null>(null);
   const chatPaneHeight = { xs: '50vh', sm: '58vh', md: '62vh' };
 
   useEffect(() => {
@@ -189,6 +236,16 @@ export function SearchPage() {
     });
   }, [isMcpGithubEnabled, mcpGithubBaseUrl, mcpGithubUsername]);
 
+  useEffect(() => {
+    saveRagSettings({
+      enabled: isRagEnabled,
+      baseUrl: ragBaseUrl,
+      selectedIndexIds: ragSelectedIndexIds,
+      minScore: Number(ragMinScoreInput),
+      topK: Number(ragTopKInput),
+    });
+  }, [isRagEnabled, ragBaseUrl, ragSelectedIndexIds, ragMinScoreInput, ragTopKInput]);
+
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     await sendUserMessage();
@@ -196,6 +253,9 @@ export function SearchPage() {
 
   const isSubmitDisabled = isLoading || isLimitReached || inputValue.trim().length === 0;
   const isCurrentChatEmpty = messages.length === 0;
+  const normalizedRagBaseUrl = ragBaseUrl.trim();
+  const isRagBaseUrlValid = isValidHttpUrl(normalizedRagBaseUrl);
+  const isAllRagIndexesSelected = ragIndexes.length > 0 && ragSelectedIndexIds.length === ragIndexes.length;
   const normalizedMcpGithubBaseUrl = mcpGithubBaseUrl.trim();
   const isMcpGithubBaseUrlValid = isValidHttpUrl(normalizedMcpGithubBaseUrl);
   const mcpGithubHealthUrl = isMcpGithubBaseUrlValid ? `${normalizedMcpGithubBaseUrl.replace(/\/+$/, '')}/github/health` : null;
@@ -338,6 +398,213 @@ export function SearchPage() {
 
   const handleMcpGithubUsernameChange = (nextValue: string) => {
     setMcpGithubUsername(nextValue);
+  };
+
+  const loadRagIndexes = async () => {
+    if (!isRagBaseUrlValid) {
+      return;
+    }
+
+    setRagIndexesStatus('loading');
+    setRagIndexesErrorMessage(null);
+
+    try {
+      const indexes = await ragApi.listIndexes(normalizedRagBaseUrl);
+      setRagIndexes(indexes);
+      setRagSelectedIndexIds((previous) => previous.filter((indexId) => indexes.some((item) => item.indexId === indexId)));
+      setRagIndexesStatus('success');
+    } catch (error) {
+      setRagIndexesStatus('error');
+      setRagIndexesErrorMessage(normalizeError(error));
+    }
+  };
+
+  useEffect(() => {
+    if (activeAgentSettingsTab !== 'rag' || !isRagEnabled || !isRagBaseUrlValid) {
+      return;
+    }
+
+    void loadRagIndexes();
+  }, [activeAgentSettingsTab, isRagEnabled, isRagBaseUrlValid, normalizedRagBaseUrl]);
+
+  const handleRagToggleChange = (enabled: boolean) => {
+    setIsRagEnabled(enabled);
+    setRagFileActionStatus('idle');
+    setRagFileActionMessage(null);
+  };
+
+  const handleRagBaseUrlChange = (nextValue: string) => {
+    setRagBaseUrl(nextValue);
+    setRagCheckStatus('idle');
+    setRagCheckMessage(null);
+    setRagIndexesStatus('idle');
+    setRagIndexesErrorMessage(null);
+  };
+
+  const handleRagFileChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0] ?? null;
+    setRagSelectedFile(file);
+    setRagFileActionStatus('idle');
+    setRagFileActionMessage(null);
+  };
+
+  const handleRagStrategyChange = (event: SelectChangeEvent) => {
+    const nextValue = event.target.value;
+    if (nextValue !== 'fixed' && nextValue !== 'structured') {
+      return;
+    }
+    setRagStrategy(nextValue);
+  };
+
+  const handleRagMinScoreChange = (nextValue: string) => {
+    if (nextValue.trim() === '') {
+      setRagMinScoreInput(nextValue);
+      return;
+    }
+
+    const parsed = Number(nextValue);
+    if (!Number.isFinite(parsed)) {
+      return;
+    }
+
+    if (parsed < 0 || parsed > 1) {
+      return;
+    }
+    setRagMinScoreInput(nextValue);
+  };
+
+  const handleRagMinScoreBlur = () => {
+    const parsed = Number(ragMinScoreInput);
+    if (!Number.isFinite(parsed)) {
+      setRagMinScoreInput(String(DEFAULT_RAG_MIN_SCORE));
+      return;
+    }
+
+    const normalized = Math.min(1, Math.max(0, parsed));
+    setRagMinScoreInput(String(Number(normalized.toFixed(2))));
+  };
+
+  const handleRagTopKChange = (nextValue: string) => {
+    if (nextValue.trim() === '') {
+      setRagTopKInput(nextValue);
+      return;
+    }
+
+    const parsed = Number(nextValue);
+    if (!Number.isFinite(parsed)) {
+      return;
+    }
+
+    setRagTopKInput(String(parsed));
+  };
+
+  const handleRagTopKBlur = () => {
+    setRagTopKInput(String(DEFAULT_RAG_TOP_K));
+  };
+
+  const handleToggleRagIndex = (indexId: string, checked: boolean) => {
+    setRagSelectedIndexIds((previous) => {
+      if (checked) {
+        if (previous.includes(indexId)) {
+          return previous;
+        }
+        return [...previous, indexId];
+      }
+
+      return previous.filter((item) => item !== indexId);
+    });
+  };
+
+  const handleSelectAllRagIndexes = () => {
+    const allIndexIds = ragIndexes.map((item) => item.indexId);
+    if (allIndexIds.length === 0) {
+      setRagSelectedIndexIds([]);
+      return;
+    }
+
+    setRagSelectedIndexIds((previous) => (previous.length === allIndexIds.length ? [] : allIndexIds));
+  };
+
+  const handleCheckRagConnection = async () => {
+    if (!isRagBaseUrlValid) {
+      return;
+    }
+
+    setRagCheckStatus('checking');
+    setRagCheckMessage(null);
+
+    try {
+      const payload = await ragApi.checkHealth(normalizedRagBaseUrl);
+      if (!isRagHealthy(payload)) {
+        setRagCheckStatus('error');
+        setRagCheckMessage('RAG вернул неожиданный health-ответ.');
+        return;
+      }
+
+      if (!isRagEmbeddingsConfigured(payload)) {
+        setRagCheckStatus('success');
+        setRagCheckMessage('Соединение с RAG есть, но embeddings не настроены (PROXYAPI_OPENAI_API_KEY пуст).');
+        return;
+      }
+
+      setRagCheckStatus('success');
+      setRagCheckMessage('RAG доступен и embeddings настроены.');
+    } catch (error) {
+      setRagCheckStatus('error');
+      setRagCheckMessage(normalizeError(error));
+    }
+  };
+
+  const handleBuildRagIndex = async () => {
+    if (!isRagBaseUrlValid || !ragSelectedFile) {
+      return;
+    }
+
+    setRagFileActionStatus('processing');
+    setRagFileActionMessage(null);
+
+    try {
+      const uploadResult = await ragApi.uploadFile(normalizedRagBaseUrl, ragSelectedFile);
+      const buildResult = await ragApi.buildIndex(normalizedRagBaseUrl, {
+        source: 'local-file',
+        filePath: uploadResult.filePath,
+        title: ragSelectedFile.name,
+        strategy: ragStrategy,
+      });
+
+      setRagFileActionStatus('success');
+      setRagFileActionMessage(`Индекс создан: ${buildResult.indexId} (чанков: ${buildResult.chunksCount}).`);
+      setRagSelectedFile(null);
+      if (ragFileInputRef.current) {
+        ragFileInputRef.current.value = '';
+      }
+      await loadRagIndexes();
+    } catch (error) {
+      setRagFileActionStatus('error');
+      setRagFileActionMessage(normalizeError(error));
+    }
+  };
+
+  const handleDeleteRagIndex = async (indexId: string) => {
+    if (!isRagBaseUrlValid || !indexId) {
+      return;
+    }
+
+    setRagDeletingIndexId(indexId);
+    setRagFileActionMessage(null);
+
+    try {
+      await ragApi.deleteIndex(normalizedRagBaseUrl, indexId);
+      setRagIndexes((prev) => prev.filter((item) => item.indexId !== indexId));
+      setRagSelectedIndexIds((previous) => previous.filter((item) => item !== indexId));
+      setRagFileActionStatus('success');
+      setRagFileActionMessage(`Индекс удален: ${indexId}`);
+    } catch (error) {
+      setRagFileActionStatus('error');
+      setRagFileActionMessage(normalizeError(error));
+    } finally {
+      setRagDeletingIndexId(null);
+    }
   };
 
   const handleCheckMcpGithubConnection = async () => {
@@ -731,7 +998,37 @@ export function SearchPage() {
                         wordBreak: 'break-word',
                       }}
                     >
-                      {isUser ? <Typography variant="body2">{message.content}</Typography> : <MarkdownMessage content={message.content} />}
+                      {isUser ? (
+                        <Typography variant="body2">{message.content}</Typography>
+                      ) : (
+                        <Stack spacing={1}>
+                          <MarkdownMessage content={message.content} />
+                          {message.rag?.sources.length ? (
+                            <Box
+                              sx={{
+                                border: '1px solid',
+                                borderColor: 'divider',
+                                borderRadius: 1.5,
+                                px: 1,
+                                py: 0.75,
+                                backgroundColor: '#f8fbff',
+                              }}
+                            >
+                              <Typography variant="caption" sx={{ fontWeight: 700, display: 'block', mb: 0.5 }}>
+                                Источники RAG
+                              </Typography>
+                              <Stack spacing={0.5}>
+                                {message.rag.sources.map((source, sourceIndex) => (
+                                  <Typography key={formatRagSourceKey(source, sourceIndex)} variant="caption" sx={{ display: 'block' }}>
+                                    file: {source.file || '-'} | section: {source.section || '-'} | chunk_id: {source.chunkId || '-'} | indexId:{' '}
+                                    {source.indexId || '-'}
+                                  </Typography>
+                                ))}
+                              </Stack>
+                            </Box>
+                          ) : null}
+                        </Stack>
+                      )}
                     </Box>
                   );
                 })}
@@ -793,6 +1090,7 @@ export function SearchPage() {
           </Stack>
         </Stack>
 
+        {ragWarningMessage ? <Alert severity="warning">{ragWarningMessage}</Alert> : null}
         {errorMessage ? <Alert severity="error">{errorMessage}</Alert> : null}
       </Stack>
 
@@ -952,6 +1250,7 @@ export function SearchPage() {
             sx={{ px: 2 }}
           >
             <Tab value="mcp" label="MCP" />
+            <Tab value="rag" label="RAG" />
           </Tabs>
 
           <Box sx={{ flexGrow: 1, overflowY: 'auto', p: 2 }}>
@@ -1003,6 +1302,236 @@ export function SearchPage() {
                     {mcpGithubCheckStatus === 'error' ? <Alert severity="error">Ошибка подключения</Alert> : null}
                   </Stack>
                 ) : null}
+              </Stack>
+            ) : null}
+
+            {activeAgentSettingsTab === 'rag' ? (
+              <Stack spacing={1.5}>
+                <Typography variant="subtitle1" fontWeight={700}>
+                  RAG
+                </Typography>
+                <Stack spacing={1}>
+                  <Typography variant="subtitle2" fontWeight={700}>
+                    Проверка соединения с RAG
+                  </Typography>
+                  <TextField
+                    label="Адрес RAG backend"
+                    value={ragBaseUrl}
+                    onChange={(event) => handleRagBaseUrlChange(event.target.value)}
+                    placeholder="http://localhost:5001"
+                    size="small"
+                    fullWidth
+                  />
+
+                  {normalizedRagBaseUrl.length > 0 && !isRagBaseUrlValid ? (
+                    <Alert severity="warning">Введите корректный URL (допускается localhost).</Alert>
+                  ) : null}
+
+                  {normalizedRagBaseUrl.length > 0 && isRagBaseUrlValid ? (
+                    <Button
+                      variant="outlined"
+                      onClick={handleCheckRagConnection}
+                      disabled={ragCheckStatus === 'checking'}
+                      sx={{ alignSelf: 'flex-start' }}
+                    >
+                      {ragCheckStatus === 'checking' ? 'Проверяем...' : 'Проверить соединение'}
+                    </Button>
+                  ) : null}
+
+                  {ragCheckStatus === 'success' ? <Alert severity="success">Соединение с RAG успешно.</Alert> : null}
+                  {ragCheckStatus === 'error' ? <Alert severity="error">Ошибка подключения к RAG.</Alert> : null}
+                  {ragCheckMessage ? (
+                    <Alert severity={ragCheckStatus === 'error' ? 'error' : ragCheckMessage.includes('не настроены') ? 'warning' : 'info'}>
+                      {ragCheckMessage}
+                    </Alert>
+                  ) : null}
+                </Stack>
+
+                <Box sx={{ pt: 2, mt: 0.5, borderTop: '1px solid', borderColor: 'divider' }}>
+                  <Stack spacing={1.5}>
+                    <FormControlLabel
+                      control={<Switch checked={isRagEnabled} onChange={(event) => handleRagToggleChange(event.target.checked)} />}
+                      label="Включить RAG"
+                    />
+
+                    {isRagEnabled ? (
+                      <Stack spacing={1.5}>
+                        <FormControl size="small" sx={{ maxWidth: 280 }}>
+                          <InputLabel id="rag-strategy-select-label">Стратегия индексации</InputLabel>
+                          <Select
+                            labelId="rag-strategy-select-label"
+                            label="Стратегия индексации"
+                            value={ragStrategy}
+                            onChange={handleRagStrategyChange}
+                          >
+                            <MenuItem value="structured">structured</MenuItem>
+                            <MenuItem value="fixed">fixed</MenuItem>
+                          </Select>
+                        </FormControl>
+
+                        <TextField
+                          label="Минимальная релевантность (minScore)"
+                          value={ragMinScoreInput}
+                          onChange={(event) => handleRagMinScoreChange(event.target.value)}
+                          onBlur={handleRagMinScoreBlur}
+                          size="small"
+                          sx={{ maxWidth: 320 }}
+                          inputProps={{ inputMode: 'decimal', min: 0, max: 1, step: 0.01 }}
+                          helperText="Диапазон 0..1, рекомендуем 0.35..0.5."
+                        />
+
+                        <TextField
+                          label="TopK (фиксировано)"
+                          value={ragTopKInput}
+                          onChange={(event) => handleRagTopKChange(event.target.value)}
+                          onBlur={handleRagTopKBlur}
+                          size="small"
+                          sx={{ maxWidth: 220 }}
+                          inputProps={{ inputMode: 'numeric' }}
+                          helperText="Для retrieval используется значение 8."
+                        />
+
+                        <Box>
+                          <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 0.5 }}>
+                            <Typography variant="subtitle2" fontWeight={700}>
+                              Индексы для retrieval
+                            </Typography>
+                            <Button variant="text" size="small" onClick={handleSelectAllRagIndexes} disabled={ragIndexes.length === 0}>
+                              {isAllRagIndexesSelected ? 'Снять выбор' : 'Выбрать все'}
+                            </Button>
+                          </Stack>
+
+                          {ragIndexesStatus === 'loading' ? (
+                            <Stack direction="row" spacing={1} alignItems="center" sx={{ py: 0.5 }}>
+                              <CircularProgress size={16} />
+                              <Typography variant="body2" color="text.secondary">
+                                Загружаем индексы...
+                              </Typography>
+                            </Stack>
+                          ) : null}
+
+                          {ragIndexesStatus !== 'loading' && ragIndexes.length > 0 ? (
+                            <Stack spacing={0.5}>
+                              {ragIndexes.map((index) => (
+                                <FormControlLabel
+                                  key={`select-${index.indexId}`}
+                                  control={
+                                    <Checkbox
+                                      size="small"
+                                      checked={ragSelectedIndexIds.includes(index.indexId)}
+                                      onChange={(event) => handleToggleRagIndex(index.indexId, event.target.checked)}
+                                    />
+                                  }
+                                  label={index.indexMeta.title || index.indexId}
+                                />
+                              ))}
+                            </Stack>
+                          ) : null}
+
+                          {ragIndexesStatus !== 'loading' && ragIndexes.length === 0 ? (
+                            <Typography variant="body2" color="text.secondary">
+                              Индексов пока нет, retrieval использовать нечего.
+                            </Typography>
+                          ) : null}
+                        </Box>
+
+                        <Button variant="outlined" component="label" sx={{ alignSelf: 'flex-start' }}>
+                          Выбрать файл (.json, .txt, .md)
+                          <input
+                            ref={ragFileInputRef}
+                            type="file"
+                            accept=".json,.txt,.md,text/plain,application/json,text/markdown"
+                            hidden
+                            onChange={handleRagFileChange}
+                          />
+                        </Button>
+                        {ragSelectedFile ? <Typography variant="body2">Выбран файл: {ragSelectedFile.name}</Typography> : null}
+
+                        <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap' }}>
+                          <Button
+                            variant="contained"
+                            onClick={handleBuildRagIndex}
+                            disabled={!ragSelectedFile || !isRagBaseUrlValid || ragFileActionStatus === 'processing'}
+                            sx={{ alignSelf: 'flex-start' }}
+                          >
+                            {ragFileActionStatus === 'processing' ? 'Обрабатываем...' : 'Обработать в RAG'}
+                          </Button>
+                          <Button
+                            variant="outlined"
+                            onClick={() => void loadRagIndexes()}
+                            disabled={!isRagBaseUrlValid || ragIndexesStatus === 'loading'}
+                            sx={{ alignSelf: 'flex-start' }}
+                          >
+                            Обновить список
+                          </Button>
+                        </Stack>
+
+                        {ragFileActionMessage ? (
+                          <Alert severity={ragFileActionStatus === 'error' ? 'error' : 'success'}>{ragFileActionMessage}</Alert>
+                        ) : null}
+
+                        <Box>
+                          <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 0.75 }}>
+                            Индексы в RAG
+                          </Typography>
+
+                          {ragIndexesStatus === 'loading' ? (
+                            <Stack direction="row" spacing={1} alignItems="center" sx={{ py: 0.5 }}>
+                              <CircularProgress size={16} />
+                              <Typography variant="body2" color="text.secondary">
+                                Загружаем список индексов...
+                              </Typography>
+                            </Stack>
+                          ) : null}
+
+                          {ragIndexesStatus === 'error' && ragIndexesErrorMessage ? (
+                            <Alert severity="error" sx={{ mb: 1 }}>
+                              {ragIndexesErrorMessage}
+                            </Alert>
+                          ) : null}
+
+                          {ragIndexesStatus !== 'loading' && ragIndexes.length === 0 ? (
+                            <Typography variant="body2" color="text.secondary">
+                              Индексов пока нет.
+                            </Typography>
+                          ) : null}
+
+                          <Stack spacing={0.75}>
+                            {ragIndexes.map((index) => (
+                              <Paper
+                                key={index.indexId}
+                                variant="outlined"
+                                sx={{ px: 1.25, py: 0.75, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1 }}
+                              >
+                                <Box sx={{ minWidth: 0 }}>
+                                  <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                                    {index.indexMeta.title || index.indexId}
+                                  </Typography>
+                                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                                    {index.indexMeta.strategy || 'fixed'} • чанков: {index.indexMeta.chunksCount}
+                                  </Typography>
+                                  {index.indexMeta.createdAt ? (
+                                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                                      {formatDateTime(index.indexMeta.createdAt)}
+                                    </Typography>
+                                  ) : null}
+                                </Box>
+                                <IconButton
+                                  aria-label={`Удалить индекс ${index.indexId}`}
+                                  size="small"
+                                  onClick={() => void handleDeleteRagIndex(index.indexId)}
+                                  disabled={ragDeletingIndexId === index.indexId}
+                                >
+                                  <DeleteOutlineIcon fontSize="small" />
+                                </IconButton>
+                              </Paper>
+                            ))}
+                          </Stack>
+                        </Box>
+                      </Stack>
+                    ) : null}
+                  </Stack>
+                </Box>
               </Stack>
             ) : null}
           </Box>

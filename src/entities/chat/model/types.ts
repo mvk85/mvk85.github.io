@@ -2,10 +2,26 @@ import type { UserProfileId } from '@/entities/profile/model/types';
 
 export type ChatMessageRole = 'user' | 'assistant';
 
+export type ChatMessageRagSource = {
+  file: string;
+  section: string;
+  chunkId: string;
+  indexId: string;
+  score: number | null;
+  title: string;
+  strategy: string;
+};
+
+export type ChatMessageRagMeta = {
+  used: boolean;
+  sources: ChatMessageRagSource[];
+};
+
 export type ChatMessage = {
   id: number;
   role: ChatMessageRole;
   content: string;
+  rag?: ChatMessageRagMeta;
 };
 
 export type LlmMessageRole = 'system' | 'user' | 'assistant';

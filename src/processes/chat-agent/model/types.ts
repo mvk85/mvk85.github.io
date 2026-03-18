@@ -34,6 +34,7 @@ export type ChatAgentState = {
   status: RequestStatus;
   errorMessage: string | null;
   memoryErrorMessage: string | null;
+  ragWarningMessage: string | null;
   hasChatsWithoutStrategy: boolean;
   activeRequestId: number | null;
   showThinkingLoader: boolean;

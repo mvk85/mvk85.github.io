@@ -32,6 +32,7 @@ export function useChatAgent() {
     isLoading: state.status === 'loading',
     longTermMemory: state.longTermMemory,
     memoryErrorMessage: state.memoryErrorMessage,
+    ragWarningMessage: derived.ragWarningMessage,
     sendUserMessage: state.sendUserMessage,
     setCurrentChatProfile: state.setCurrentChatProfile,
     setCurrentChatModel: state.setCurrentChatModel,

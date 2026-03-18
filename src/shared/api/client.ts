@@ -23,10 +23,25 @@ async function requestJson<TResponse>(
   });
 
   const text = await response.text();
-  const payload = text ? JSON.parse(text) : null;
+  let payload: unknown = null;
+  if (text) {
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      payload = null;
+    }
+  }
 
   if (!response.ok) {
-    const errorText = payload?.error?.message || payload?.error || response.statusText || 'Request failed';
+    const payloadObject = typeof payload === 'object' && payload !== null ? payload as Record<string, unknown> : null;
+    const message = payloadObject?.message;
+    const error = payloadObject?.error;
+    const errorText =
+      (Array.isArray(message) ? message.join('; ') : null) ||
+      (typeof message === 'string' ? message : null) ||
+      (typeof error === 'string' ? error : null) ||
+      response.statusText ||
+      'Request failed';
     throw new HttpError(response.status, String(errorText));
   }
 
