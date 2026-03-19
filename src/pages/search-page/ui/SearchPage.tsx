@@ -23,6 +23,12 @@ import {
   RadioGroup,
   Select,
   type SelectChangeEvent,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableRow,
+  TableContainer,
   Tab,
   Tabs,
   Stack,
@@ -32,7 +38,7 @@ import {
   Switch,
 } from '@mui/material';
 
-import type { ChatContextStrategy, ChatMessageRagSource, ChatSession } from '@/entities/chat/model/types';
+import type { ChatContextStrategy, ChatMessageRagMode, ChatMessageRagSource, ChatSession } from '@/entities/chat/model/types';
 import type { ScheduledEvent } from '@/processes/chat-agent/model/schedulerTypes';
 import { USER_MESSAGE_LIMIT } from '@/entities/chat/lib/constants';
 import { CHAT_TASK_OPTIONS, getTaskInvariants } from '@/entities/chat/lib/taskConfig';
@@ -42,7 +48,14 @@ import { PageContainer } from '@/shared/ui/PageContainer';
 import { USER_PROFILE_OPTIONS } from '@/entities/profile/lib/profileConfig';
 import { CHAT_MODEL_OPTIONS, type ChatModel } from '@/shared/config/llmModels';
 import { loadMcpGithubSettings, saveMcpGithubSettings } from '@/processes/chat-agent/lib/mcpGithubSettings';
-import { DEFAULT_RAG_MIN_SCORE, DEFAULT_RAG_TOP_K, loadRagSettings, saveRagSettings } from '@/processes/chat-agent/lib/ragSettings';
+import {
+  DEFAULT_RAG_CANDIDATE_TOP_K,
+  DEFAULT_RAG_MIN_SCORE,
+  DEFAULT_RAG_TOP_K,
+  type RagRetrievalMode,
+  loadRagSettings,
+  saveRagSettings,
+} from '@/processes/chat-agent/lib/ragSettings';
 import { ragApi, type RagHealthResponse, type RagIndexListItem } from '@/shared/api/ragApi';
 import { env } from '@/shared/config/env';
 import { normalizeError } from '@/shared/lib/errors';
@@ -88,6 +101,16 @@ function formatScheduledEventTitle(event: ScheduledEvent): string {
 function formatRagSourceKey(source: ChatMessageRagSource, index: number): string {
   const base = source.chunkId || source.indexId || source.file || String(index);
   return `${base}_${index}`;
+}
+
+function formatRagModeTitle(mode: ChatMessageRagMode): string {
+  if (mode === 'baseline') {
+    return 'baseline';
+  }
+  if (mode === 'threshold') {
+    return 'threshold';
+  }
+  return 'heuristic';
 }
 
 type MemoryTab = 'short-term' | 'working' | 'long-term';
@@ -163,6 +186,10 @@ export function SearchPage() {
   const [ragSelectedIndexIds, setRagSelectedIndexIds] = useState<string[]>(initialRagSettings.selectedIndexIds);
   const [ragMinScoreInput, setRagMinScoreInput] = useState(String(initialRagSettings.minScore));
   const [ragTopKInput, setRagTopKInput] = useState(String(initialRagSettings.topK || DEFAULT_RAG_TOP_K));
+  const [ragCandidateTopKInput, setRagCandidateTopKInput] = useState(String(initialRagSettings.candidateTopK || DEFAULT_RAG_CANDIDATE_TOP_K));
+  const [ragRetrievalMode, setRagRetrievalMode] = useState<RagRetrievalMode>(initialRagSettings.retrievalMode);
+  const [ragRewriteQueryEnabled, setRagRewriteQueryEnabled] = useState(initialRagSettings.rewriteQuery);
+  const [ragCompareModesEnabled, setRagCompareModesEnabled] = useState(initialRagSettings.compareModes);
   const [isMcpGithubEnabled, setIsMcpGithubEnabled] = useState(initialMcpGithubSettings.enabled);
   const [mcpGithubBaseUrl, setMcpGithubBaseUrl] = useState(initialMcpGithubSettings.baseUrl);
   const [mcpGithubUsername, setMcpGithubUsername] = useState(initialMcpGithubSettings.username);
@@ -243,8 +270,22 @@ export function SearchPage() {
       selectedIndexIds: ragSelectedIndexIds,
       minScore: Number(ragMinScoreInput),
       topK: Number(ragTopKInput),
+      candidateTopK: Number(ragCandidateTopKInput),
+      retrievalMode: ragRetrievalMode,
+      rewriteQuery: ragRewriteQueryEnabled,
+      compareModes: ragCompareModesEnabled,
     });
-  }, [isRagEnabled, ragBaseUrl, ragSelectedIndexIds, ragMinScoreInput, ragTopKInput]);
+  }, [
+    isRagEnabled,
+    ragBaseUrl,
+    ragSelectedIndexIds,
+    ragMinScoreInput,
+    ragTopKInput,
+    ragCandidateTopKInput,
+    ragRetrievalMode,
+    ragRewriteQueryEnabled,
+    ragCompareModesEnabled,
+  ]);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -500,6 +541,38 @@ export function SearchPage() {
 
   const handleRagTopKBlur = () => {
     setRagTopKInput(String(DEFAULT_RAG_TOP_K));
+  };
+
+  const handleRagCandidateTopKChange = (nextValue: string) => {
+    if (nextValue.trim() === '') {
+      setRagCandidateTopKInput(nextValue);
+      return;
+    }
+
+    const parsed = Number(nextValue);
+    if (!Number.isFinite(parsed)) {
+      return;
+    }
+
+    setRagCandidateTopKInput(String(Math.round(parsed)));
+  };
+
+  const handleRagCandidateTopKBlur = () => {
+    const parsed = Number(ragCandidateTopKInput);
+    if (!Number.isFinite(parsed)) {
+      setRagCandidateTopKInput(String(DEFAULT_RAG_CANDIDATE_TOP_K));
+      return;
+    }
+    const normalized = Math.min(200, Math.max(DEFAULT_RAG_TOP_K, Math.round(parsed)));
+    setRagCandidateTopKInput(String(normalized));
+  };
+
+  const handleRagRetrievalModeChange = (event: SelectChangeEvent) => {
+    const nextMode = event.target.value;
+    if (nextMode !== 'baseline' && nextMode !== 'threshold' && nextMode !== 'heuristic') {
+      return;
+    }
+    setRagRetrievalMode(nextMode);
   };
 
   const handleToggleRagIndex = (indexId: string, checked: boolean) => {
@@ -1017,14 +1090,117 @@ export function SearchPage() {
                               <Typography variant="caption" sx={{ fontWeight: 700, display: 'block', mb: 0.5 }}>
                                 Источники RAG
                               </Typography>
-                              <Stack spacing={0.5}>
-                                {message.rag.sources.map((source, sourceIndex) => (
-                                  <Typography key={formatRagSourceKey(source, sourceIndex)} variant="caption" sx={{ display: 'block' }}>
-                                    file: {source.file || '-'} | section: {source.section || '-'} | chunk_id: {source.chunkId || '-'} | indexId:{' '}
-                                    {source.indexId || '-'}
+                              <TableContainer sx={{ width: '100%', overflowX: 'auto' }}>
+                                <Table size="small" sx={{ minWidth: 700, '& td, & th': { fontSize: '0.72rem', py: 0.35, px: 0.6 } }}>
+                                  <TableHead>
+                                    <TableRow>
+                                      <TableCell>#</TableCell>
+                                      <TableCell>file</TableCell>
+                                      <TableCell>section</TableCell>
+                                      <TableCell>chunk_id</TableCell>
+                                      <TableCell>indexId</TableCell>
+                                      <TableCell align="right">score</TableCell>
+                                    </TableRow>
+                                  </TableHead>
+                                  <TableBody>
+                                    {message.rag.sources.map((source, sourceIndex) => (
+                                      <TableRow key={formatRagSourceKey(source, sourceIndex)}>
+                                        <TableCell>{sourceIndex + 1}</TableCell>
+                                        <TableCell>{source.file || '-'}</TableCell>
+                                        <TableCell>{source.section || '-'}</TableCell>
+                                        <TableCell>{source.chunkId || '-'}</TableCell>
+                                        <TableCell>{source.indexId || '-'}</TableCell>
+                                        <TableCell align="right">{typeof source.score === 'number' ? source.score.toFixed(3) : '-'}</TableCell>
+                                      </TableRow>
+                                    ))}
+                                  </TableBody>
+                                </Table>
+                              </TableContainer>
+
+                              {message.rag.modeComparison ? (
+                                <Box sx={{ mt: 1, borderTop: '1px dashed', borderColor: 'divider', pt: 0.75 }}>
+                                  <Typography variant="caption" sx={{ fontWeight: 700, display: 'block', mb: 0.5 }}>
+                                    Сравнение режимов
                                   </Typography>
-                                ))}
-                              </Stack>
+                                  {(() => {
+                                    const comparison = message.rag.modeComparison;
+                                    const baselineRows = comparison.baseline ?? [];
+                                    const baselineMap = new Map(baselineRows.map((item) => [item.chunkId, item.score]));
+                                    const chunkFrequency = new Map<string, number>();
+                                    (['baseline', 'threshold', 'heuristic'] as const).forEach((mode) => {
+                                      const uniqueIds = new Set((comparison[mode] ?? []).map((item) => item.chunkId).filter((id) => id.length > 0));
+                                      uniqueIds.forEach((id) => {
+                                        chunkFrequency.set(id, (chunkFrequency.get(id) ?? 0) + 1);
+                                      });
+                                    });
+                                    const comparisonRows = (['baseline', 'threshold', 'heuristic'] as const).flatMap((mode) =>
+                                      (comparison[mode] ?? []).slice(0, 3).map((item, index) => {
+                                        const baselineScore = baselineMap.get(item.chunkId);
+                                        const delta = mode === 'baseline' ? 0 : typeof baselineScore === 'number' ? item.score - baselineScore : null;
+                                        return {
+                                          mode,
+                                          rank: index + 1,
+                                          chunkId: item.chunkId || '-',
+                                          score: item.score,
+                                          delta,
+                                          overlap: (chunkFrequency.get(item.chunkId) ?? 0) > 1 ? 'shared' : 'unique',
+                                        };
+                                      }),
+                                    );
+
+                                    return (
+                                      <TableContainer sx={{ width: '100%', overflowX: 'auto' }}>
+                                        <Table size="small" sx={{ minWidth: 820, '& td, & th': { fontSize: '0.72rem', py: 0.35, px: 0.6 } }}>
+                                          <TableHead>
+                                            <TableRow>
+                                              <TableCell
+                                                sx={{
+                                                  position: 'sticky',
+                                                  left: 0,
+                                                  zIndex: 3,
+                                                  backgroundColor: '#f8fbff',
+                                                }}
+                                              >
+                                                mode
+                                              </TableCell>
+                                              <TableCell align="right">rank</TableCell>
+                                              <TableCell>chunk_id</TableCell>
+                                              <TableCell align="right">score</TableCell>
+                                              <TableCell align="right">delta vs baseline</TableCell>
+                                              <TableCell>overlap</TableCell>
+                                            </TableRow>
+                                          </TableHead>
+                                          <TableBody>
+                                            {comparisonRows.map((row) => (
+                                              <TableRow key={`${row.mode}_${row.rank}_${row.chunkId}`}>
+                                                <TableCell
+                                                  sx={{
+                                                    whiteSpace: 'nowrap',
+                                                    fontWeight: 600,
+                                                    position: 'sticky',
+                                                    left: 0,
+                                                    zIndex: 2,
+                                                    backgroundColor: '#f8fbff',
+                                                  }}
+                                                >
+                                                  {formatRagModeTitle(row.mode)}
+                                                </TableCell>
+                                                <TableCell align="right">{row.rank}</TableCell>
+                                                <TableCell>{row.chunkId}</TableCell>
+                                                <TableCell align="right">{row.score.toFixed(3)}</TableCell>
+                                                <TableCell align="right">
+                                                  {row.delta === null ? 'n/a' : `${row.delta >= 0 ? '+' : ''}${row.delta.toFixed(3)}`}
+                                                </TableCell>
+                                                <TableCell>{row.overlap}</TableCell>
+                                              </TableRow>
+                                            ))}
+                                          </TableBody>
+                                        </Table>
+                                      </TableContainer>
+                                    );
+                                  })()}
+                                </Box>
+                              ) : null}
                             </Box>
                           ) : null}
                         </Stack>
@@ -1389,6 +1565,41 @@ export function SearchPage() {
                           sx={{ maxWidth: 220 }}
                           inputProps={{ inputMode: 'numeric' }}
                           helperText="Для retrieval используется значение 8."
+                        />
+
+                        <TextField
+                          label="Candidate TopK (до фильтра)"
+                          value={ragCandidateTopKInput}
+                          onChange={(event) => handleRagCandidateTopKChange(event.target.value)}
+                          onBlur={handleRagCandidateTopKBlur}
+                          size="small"
+                          sx={{ maxWidth: 260 }}
+                          inputProps={{ inputMode: 'numeric', min: DEFAULT_RAG_TOP_K, max: 200 }}
+                          helperText="Сколько кандидатов взять до threshold/rerank."
+                        />
+
+                        <FormControl size="small" sx={{ maxWidth: 320 }}>
+                          <InputLabel id="rag-retrieval-mode-label">Режим retrieval</InputLabel>
+                          <Select
+                            labelId="rag-retrieval-mode-label"
+                            label="Режим retrieval"
+                            value={ragRetrievalMode}
+                            onChange={handleRagRetrievalModeChange}
+                          >
+                            <MenuItem value="baseline">baseline (только vector similarity)</MenuItem>
+                            <MenuItem value="threshold">threshold (vector + minScore)</MenuItem>
+                            <MenuItem value="heuristic">heuristic rerank (дешевый)</MenuItem>
+                          </Select>
+                        </FormControl>
+
+                        <FormControlLabel
+                          control={<Switch checked={ragRewriteQueryEnabled} onChange={(event) => setRagRewriteQueryEnabled(event.target.checked)} />}
+                          label="Query rewrite перед retrieval"
+                        />
+
+                        <FormControlLabel
+                          control={<Switch checked={ragCompareModesEnabled} onChange={(event) => setRagCompareModesEnabled(event.target.checked)} />}
+                          label="Сравнение режимов (backend flag)"
                         />
 
                         <Box>

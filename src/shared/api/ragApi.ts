@@ -77,36 +77,69 @@ export type RagChunkMetadata = {
 export type RagRetrieveMatch = {
   indexId: string;
   score: number;
+  vectorScore?: number;
+  lexicalScore?: number;
   text: string;
   metadata: RagChunkMetadata;
+};
+
+export type RagRetrievalMode = 'baseline' | 'threshold' | 'heuristic';
+
+export type RagModeComparison = Record<RagRetrievalMode, Array<{ indexId: string; chunkId: string; score: number }>>;
+
+export type RagRewriteInfo = {
+  enabled: boolean;
+  originalQuery: string;
+  effectiveQuery: string;
+  wasRewritten: boolean;
 };
 
 export type RagRetrieveResponse = {
   indexId: string;
   query: string;
   topK: number;
+  candidateTopK?: number;
+  mode?: RagRetrievalMode;
+  minScore?: number;
+  rewrite?: RagRewriteInfo;
   matches: RagRetrieveMatch[];
+  modeComparison?: RagModeComparison;
 };
 
 export type RagRetrieveMultiResponse = {
   indexIds: string[];
   query: string;
   topK: number;
+  candidateTopK?: number;
+  mode?: RagRetrievalMode;
+  minScore?: number;
+  rewrite?: RagRewriteInfo;
   searchedIndexIds: string[];
   missingIndexIds: string[];
   matches: RagRetrieveMatch[];
+  modeComparison?: RagModeComparison;
 };
 
 type RagRetrieveRequest = {
   indexId: string;
   query: string;
   topK: number;
+  candidateTopK?: number;
+  mode?: RagRetrievalMode;
+  minScore?: number;
+  rewriteQuery?: boolean;
+  compareModes?: boolean;
 };
 
 type RagRetrieveMultiRequest = {
   indexIds: string[];
   query: string;
   topK: number;
+  candidateTopK?: number;
+  mode?: RagRetrievalMode;
+  minScore?: number;
+  rewriteQuery?: boolean;
+  compareModes?: boolean;
 };
 
 type RagIndexesResponse = {
@@ -126,6 +159,8 @@ type RagDeleteIndexResponse = {
 type RagRetrieveMatchRaw = {
   indexId?: unknown;
   score?: unknown;
+  vectorScore?: unknown;
+  lexicalScore?: unknown;
   text?: unknown;
   metadata?: {
     source?: unknown;
@@ -142,6 +177,11 @@ type RagRetrieveResponseRaw = {
   indexId?: unknown;
   query?: unknown;
   topK?: unknown;
+  candidateTopK?: unknown;
+  mode?: unknown;
+  minScore?: unknown;
+  rewrite?: unknown;
+  modeComparison?: unknown;
   matches?: RagRetrieveMatchRaw[];
 };
 
@@ -149,6 +189,11 @@ type RagRetrieveMultiResponseRaw = {
   indexIds?: unknown;
   query?: unknown;
   topK?: unknown;
+  candidateTopK?: unknown;
+  mode?: unknown;
+  minScore?: unknown;
+  rewrite?: unknown;
+  modeComparison?: unknown;
   searchedIndexIds?: unknown;
   missingIndexIds?: unknown;
   matches?: RagRetrieveMatchRaw[];
@@ -168,6 +213,10 @@ function toText(value: unknown): string {
 
 function toFiniteNumber(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+function resolveOptionalNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
 function toTextArray(value: unknown): string[] {
@@ -223,6 +272,8 @@ function normalizeRetrieveMatch(raw: RagRetrieveMatchRaw, fallbackIndexId: strin
   return {
     indexId,
     score: toFiniteNumber(raw.score),
+    vectorScore: typeof raw.vectorScore === 'number' ? toFiniteNumber(raw.vectorScore) : undefined,
+    lexicalScore: typeof raw.lexicalScore === 'number' ? toFiniteNumber(raw.lexicalScore) : undefined,
     text: toText(raw.text),
     metadata: {
       source: toText(metadata.source),
@@ -233,6 +284,60 @@ function normalizeRetrieveMatch(raw: RagRetrieveMatchRaw, fallbackIndexId: strin
       strategy: toText(metadata.strategy),
       tokenCount: toFiniteNumber(metadata.token_count),
     },
+  };
+}
+
+function normalizeRetrievalMode(value: unknown): RagRetrievalMode | undefined {
+  if (value === 'baseline' || value === 'threshold' || value === 'heuristic') {
+    return value;
+  }
+  return undefined;
+}
+
+function normalizeRewriteInfo(value: unknown): RagRewriteInfo | undefined {
+  if (typeof value !== 'object' || value === null) {
+    return undefined;
+  }
+  const raw = value as {
+    enabled?: unknown;
+    originalQuery?: unknown;
+    effectiveQuery?: unknown;
+    wasRewritten?: unknown;
+  };
+  return {
+    enabled: raw.enabled === true,
+    originalQuery: toText(raw.originalQuery),
+    effectiveQuery: toText(raw.effectiveQuery),
+    wasRewritten: raw.wasRewritten === true,
+  };
+}
+
+function normalizeModeComparison(value: unknown): RagModeComparison | undefined {
+  if (typeof value !== 'object' || value === null) {
+    return undefined;
+  }
+  const raw = value as Record<string, unknown>;
+  const normalizeItems = (items: unknown): Array<{ indexId: string; chunkId: string; score: number }> => {
+    if (!Array.isArray(items)) {
+      return [];
+    }
+    return items.map((item) => {
+      if (typeof item !== 'object' || item === null) {
+        return { indexId: '', chunkId: '', score: 0 };
+      }
+      const candidate = item as { indexId?: unknown; chunkId?: unknown; score?: unknown };
+      return {
+        indexId: toText(candidate.indexId),
+        chunkId: toText(candidate.chunkId),
+        score: toFiniteNumber(candidate.score),
+      };
+    });
+  };
+
+  return {
+    baseline: normalizeItems(raw.baseline),
+    threshold: normalizeItems(raw.threshold),
+    heuristic: normalizeItems(raw.heuristic),
   };
 }
 
@@ -326,7 +431,12 @@ export const ragApi = {
       indexId: resolvedIndexId,
       query: toText(response.query) || body.query,
       topK: toFiniteNumber(response.topK) || body.topK,
+      candidateTopK: resolveOptionalNumber(response.candidateTopK) ?? body.candidateTopK,
+      mode: normalizeRetrievalMode(response.mode) || body.mode,
+      minScore: resolveOptionalNumber(response.minScore) ?? body.minScore,
+      rewrite: normalizeRewriteInfo(response.rewrite),
       matches: matchesRaw.map((match) => normalizeRetrieveMatch(match, resolvedIndexId)),
+      modeComparison: normalizeModeComparison(response.modeComparison),
     };
   },
 
@@ -342,9 +452,14 @@ export const ragApi = {
       indexIds: toTextArray(response.indexIds),
       query: toText(response.query) || body.query,
       topK: toFiniteNumber(response.topK) || body.topK,
+      candidateTopK: resolveOptionalNumber(response.candidateTopK) ?? body.candidateTopK,
+      mode: normalizeRetrievalMode(response.mode) || body.mode,
+      minScore: resolveOptionalNumber(response.minScore) ?? body.minScore,
+      rewrite: normalizeRewriteInfo(response.rewrite),
       searchedIndexIds: toTextArray(response.searchedIndexIds),
       missingIndexIds: toTextArray(response.missingIndexIds),
       matches: matchesRaw.map((match) => normalizeRetrieveMatch(match, '')),
+      modeComparison: normalizeModeComparison(response.modeComparison),
     };
   },
 };

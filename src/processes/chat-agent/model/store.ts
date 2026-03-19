@@ -25,6 +25,7 @@ import { deleteWorkingMemoryForChat, loadWorkingMemoryByChat, saveWorkingMemoryB
 import type {
   ChatContextStrategy,
   ChatMessage,
+  ChatMessageRagModeComparison,
   ChatMessageRagSource,
   ChatSession,
   ChatTaskId,
@@ -58,7 +59,7 @@ import type { ChatAgentState, ChatStatsState, PendingIssueReportSummaryState, Re
 import type { ScheduledEvent } from '@/processes/chat-agent/model/schedulerTypes';
 import { HttpError } from '@/shared/api/client';
 import { openAiProxyChatApi } from '@/shared/api/openAiProxyChatApi';
-import { ragApi, type RagRetrieveMatch } from '@/shared/api/ragApi';
+import { ragApi, type RagModeComparison, type RagRetrieveMatch } from '@/shared/api/ragApi';
 import { env } from '@/shared/config/env';
 import { CHAT_MODEL_OPTIONS, type ChatModel } from '@/shared/config/llmModels';
 import { normalizeError } from '@/shared/lib/errors';
@@ -93,6 +94,7 @@ type AssistantCommandResolution = {
 type RagRetrievalOutput = {
   contextMessage: LlmMessage | null;
   sources: ChatMessageRagSource[];
+  modeComparison: ChatMessageRagModeComparison | null;
   warningMessage: string | null;
 };
 
@@ -128,6 +130,17 @@ function toRagSource(match: RagRetrieveMatch): ChatMessageRagSource {
     score: Number.isFinite(match.score) ? match.score : null,
     title: match.metadata.title,
     strategy: match.metadata.strategy,
+  };
+}
+
+function toChatModeComparison(value: RagModeComparison | undefined): ChatMessageRagModeComparison | null {
+  if (!value) {
+    return null;
+  }
+  return {
+    baseline: value.baseline.map((item) => ({ ...item })),
+    threshold: value.threshold.map((item) => ({ ...item })),
+    heuristic: value.heuristic.map((item) => ({ ...item })),
   };
 }
 
@@ -447,6 +460,7 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
         return {
           contextMessage: null,
           sources: [],
+          modeComparison: null,
           warningMessage: null,
         };
       }
@@ -457,11 +471,13 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
         return {
           contextMessage: null,
           sources: [],
+          modeComparison: null,
           warningMessage: null,
         };
       }
 
       let matches: RagRetrieveMatch[] = [];
+      let modeComparison: ChatMessageRagModeComparison | null = null;
       let warningMessage: string | null = null;
 
       try {
@@ -471,10 +487,16 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
             indexIds: ragSettings.selectedIndexIds,
             query: retrievalQuery,
             topK,
+            candidateTopK: ragSettings.candidateTopK,
+            mode: ragSettings.retrievalMode,
+            minScore: ragSettings.minScore,
+            rewriteQuery: ragSettings.rewriteQuery,
+            compareModes: ragSettings.compareModes,
           },
           { signal },
         );
         matches = multi.matches;
+        modeComparison = toChatModeComparison(multi.modeComparison);
         if (multi.missingIndexIds.length > 0) {
           warningMessage = `RAG: часть выбранных индексов не найдена (${multi.missingIndexIds.join(', ')}).`;
         }
@@ -490,6 +512,11 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
                   indexId,
                   query: retrievalQuery,
                   topK,
+                  candidateTopK: ragSettings.candidateTopK,
+                  mode: ragSettings.retrievalMode,
+                  minScore: ragSettings.minScore,
+                  rewriteQuery: ragSettings.rewriteQuery,
+                  compareModes: ragSettings.compareModes,
                 },
                 { signal },
               ),
@@ -501,17 +528,21 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
           return {
             contextMessage: null,
             sources: [],
+            modeComparison: null,
             warningMessage: `RAG: не удалось получить контекст (${normalizeError(fallbackError)}).`,
           };
         }
       }
 
-      const minScore = ragSettings.minScore;
-      const filtered = matches.filter((match) => match.score >= minScore).slice(0, topK);
+      const needsClientSideFilter = ragSettings.retrievalMode !== 'baseline';
+      const filtered = needsClientSideFilter
+        ? matches.filter((match) => match.score >= ragSettings.minScore).slice(0, topK)
+        : matches.slice(0, topK);
       if (filtered.length === 0) {
         return {
           contextMessage: null,
           sources: [],
+          modeComparison,
           warningMessage,
         };
       }
@@ -519,6 +550,7 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
       return {
         contextMessage: buildRagContextMessage(filtered),
         sources: filtered.map(toRagSource),
+        modeComparison,
         warningMessage,
       };
     };
@@ -1307,6 +1339,7 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
                   rag: {
                     used: true,
                     sources: ragRetrieval.sources,
+                    ...(ragRetrieval.modeComparison ? { modeComparison: ragRetrieval.modeComparison } : {}),
                   },
                 }
               : {}),

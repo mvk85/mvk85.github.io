@@ -12,9 +12,20 @@ export type ChatMessageRagSource = {
   strategy: string;
 };
 
+export type ChatMessageRagMode = 'baseline' | 'threshold' | 'heuristic';
+
+export type ChatMessageRagModeComparisonItem = {
+  indexId: string;
+  chunkId: string;
+  score: number;
+};
+
+export type ChatMessageRagModeComparison = Record<ChatMessageRagMode, ChatMessageRagModeComparisonItem[]>;
+
 export type ChatMessageRagMeta = {
   used: boolean;
   sources: ChatMessageRagSource[];
+  modeComparison?: ChatMessageRagModeComparison;
 };
 
 export type ChatMessage = {

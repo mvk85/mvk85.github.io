@@ -8,7 +8,13 @@ type StoredRagSettings = {
   selectedIndexIds?: unknown;
   minScore?: unknown;
   topK?: unknown;
+  candidateTopK?: unknown;
+  retrievalMode?: unknown;
+  rewriteQuery?: unknown;
+  compareModes?: unknown;
 };
+
+export type RagRetrievalMode = 'baseline' | 'threshold' | 'heuristic';
 
 export type RagSettings = {
   enabled: boolean;
@@ -16,10 +22,18 @@ export type RagSettings = {
   selectedIndexIds: string[];
   minScore: number;
   topK: number;
+  candidateTopK: number;
+  retrievalMode: RagRetrievalMode;
+  rewriteQuery: boolean;
+  compareModes: boolean;
 };
 
 export const DEFAULT_RAG_MIN_SCORE = 0.5;
 export const DEFAULT_RAG_TOP_K = 8;
+export const DEFAULT_RAG_CANDIDATE_TOP_K = 24;
+export const DEFAULT_RAG_RETRIEVAL_MODE: RagRetrievalMode = 'heuristic';
+export const DEFAULT_RAG_REWRITE_QUERY = true;
+export const DEFAULT_RAG_COMPARE_MODES = false;
 
 function normalizeBaseUrl(value: unknown): string {
   if (typeof value !== 'string') {
@@ -64,6 +78,34 @@ function normalizeMinScore(value: unknown): number {
   return value;
 }
 
+function normalizeCandidateTopK(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return DEFAULT_RAG_CANDIDATE_TOP_K;
+  }
+  const rounded = Math.round(value);
+  if (rounded < DEFAULT_RAG_TOP_K) {
+    return DEFAULT_RAG_TOP_K;
+  }
+  if (rounded > 200) {
+    return 200;
+  }
+  return rounded;
+}
+
+function normalizeRetrievalMode(value: unknown): RagRetrievalMode {
+  if (value === 'baseline' || value === 'threshold' || value === 'heuristic') {
+    return value;
+  }
+  return DEFAULT_RAG_RETRIEVAL_MODE;
+}
+
+function normalizeBoolean(value: unknown, fallback: boolean): boolean {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  return fallback;
+}
+
 export function loadRagSettings(): RagSettings {
   if (typeof globalThis === 'undefined' || typeof globalThis.localStorage === 'undefined') {
     return {
@@ -72,6 +114,10 @@ export function loadRagSettings(): RagSettings {
       selectedIndexIds: [],
       minScore: DEFAULT_RAG_MIN_SCORE,
       topK: DEFAULT_RAG_TOP_K,
+      candidateTopK: DEFAULT_RAG_CANDIDATE_TOP_K,
+      retrievalMode: DEFAULT_RAG_RETRIEVAL_MODE,
+      rewriteQuery: DEFAULT_RAG_REWRITE_QUERY,
+      compareModes: DEFAULT_RAG_COMPARE_MODES,
     };
   }
 
@@ -84,6 +130,10 @@ export function loadRagSettings(): RagSettings {
         selectedIndexIds: [],
         minScore: DEFAULT_RAG_MIN_SCORE,
         topK: DEFAULT_RAG_TOP_K,
+        candidateTopK: DEFAULT_RAG_CANDIDATE_TOP_K,
+        retrievalMode: DEFAULT_RAG_RETRIEVAL_MODE,
+        rewriteQuery: DEFAULT_RAG_REWRITE_QUERY,
+        compareModes: DEFAULT_RAG_COMPARE_MODES,
       };
     }
 
@@ -94,6 +144,10 @@ export function loadRagSettings(): RagSettings {
       selectedIndexIds: normalizeSelectedIndexIds(parsed.selectedIndexIds),
       minScore: normalizeMinScore(parsed.minScore),
       topK: DEFAULT_RAG_TOP_K,
+      candidateTopK: normalizeCandidateTopK(parsed.candidateTopK),
+      retrievalMode: normalizeRetrievalMode(parsed.retrievalMode),
+      rewriteQuery: normalizeBoolean(parsed.rewriteQuery, DEFAULT_RAG_REWRITE_QUERY),
+      compareModes: normalizeBoolean(parsed.compareModes, DEFAULT_RAG_COMPARE_MODES),
     };
   } catch {
     return {
@@ -102,6 +156,10 @@ export function loadRagSettings(): RagSettings {
       selectedIndexIds: [],
       minScore: DEFAULT_RAG_MIN_SCORE,
       topK: DEFAULT_RAG_TOP_K,
+      candidateTopK: DEFAULT_RAG_CANDIDATE_TOP_K,
+      retrievalMode: DEFAULT_RAG_RETRIEVAL_MODE,
+      rewriteQuery: DEFAULT_RAG_REWRITE_QUERY,
+      compareModes: DEFAULT_RAG_COMPARE_MODES,
     };
   }
 }
@@ -119,6 +177,10 @@ export function saveRagSettings(settings: RagSettings): void {
       selectedIndexIds: normalizeSelectedIndexIds(settings.selectedIndexIds),
       minScore: normalizeMinScore(settings.minScore),
       topK: DEFAULT_RAG_TOP_K,
+      candidateTopK: normalizeCandidateTopK(settings.candidateTopK),
+      retrievalMode: normalizeRetrievalMode(settings.retrievalMode),
+      rewriteQuery: normalizeBoolean(settings.rewriteQuery, DEFAULT_RAG_REWRITE_QUERY),
+      compareModes: normalizeBoolean(settings.compareModes, DEFAULT_RAG_COMPARE_MODES),
     }),
   );
 }

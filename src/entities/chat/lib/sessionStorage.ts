@@ -10,6 +10,7 @@ import {
 import type {
   ChatContextStrategy,
   ChatMessage,
+  ChatMessageRagModeComparison,
   ChatSession,
   ChatSessionsState,
   ChatSummaryState,
@@ -119,7 +120,7 @@ function normalizeChatMessage(value: unknown, fallbackId: number): ChatMessage |
   const id = typeof candidate.id === 'number' && Number.isInteger(candidate.id) && candidate.id > 0 ? candidate.id : fallbackId;
   let rag: ChatMessage['rag'];
   if (typeof candidate.rag === 'object' && candidate.rag !== null && !Array.isArray(candidate.rag)) {
-    const ragCandidate = candidate.rag as { used?: unknown; sources?: unknown };
+    const ragCandidate = candidate.rag as { used?: unknown; sources?: unknown; modeComparison?: unknown };
     if (typeof ragCandidate.used === 'boolean' && Array.isArray(ragCandidate.sources)) {
       const normalizedSources = ragCandidate.sources
         .map((source) => {
@@ -158,9 +159,41 @@ function normalizeChatMessage(value: unknown, fallbackId: number): ChatMessage |
         })
         .filter((item): item is NonNullable<typeof item> => Boolean(item));
 
+      let modeComparison: ChatMessageRagModeComparison | undefined;
+      if (typeof ragCandidate.modeComparison === 'object' && ragCandidate.modeComparison !== null && !Array.isArray(ragCandidate.modeComparison)) {
+        const raw = ragCandidate.modeComparison as Record<string, unknown>;
+        const normalizeItems = (value: unknown) => {
+          if (!Array.isArray(value)) {
+            return [];
+          }
+          return value
+            .map((item) => {
+              if (typeof item !== 'object' || item === null || Array.isArray(item)) {
+                return null;
+              }
+              const candidateItem = item as { indexId?: unknown; chunkId?: unknown; score?: unknown };
+              if (typeof candidateItem.indexId !== 'string' || typeof candidateItem.chunkId !== 'string' || typeof candidateItem.score !== 'number') {
+                return null;
+              }
+              return {
+                indexId: candidateItem.indexId,
+                chunkId: candidateItem.chunkId,
+                score: candidateItem.score,
+              };
+            })
+            .filter((item): item is NonNullable<typeof item> => Boolean(item));
+        };
+        modeComparison = {
+          baseline: normalizeItems(raw.baseline),
+          threshold: normalizeItems(raw.threshold),
+          heuristic: normalizeItems(raw.heuristic),
+        };
+      }
+
       rag = {
         used: ragCandidate.used,
         sources: normalizedSources,
+        ...(modeComparison ? { modeComparison } : {}),
       };
     }
   }
@@ -473,6 +506,15 @@ export function createBranchedChatSession(parentChat: ChatSession, allChats: Cha
           rag: {
             used: message.rag.used,
             sources: message.rag.sources.map((source) => ({ ...source })),
+            ...(message.rag.modeComparison
+              ? {
+                  modeComparison: {
+                    baseline: message.rag.modeComparison.baseline.map((item) => ({ ...item })),
+                    threshold: message.rag.modeComparison.threshold.map((item) => ({ ...item })),
+                    heuristic: message.rag.modeComparison.heuristic.map((item) => ({ ...item })),
+                  },
+                }
+              : {}),
           },
         }
       : {}),
