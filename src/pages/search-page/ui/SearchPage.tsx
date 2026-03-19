@@ -190,6 +190,9 @@ export function SearchPage() {
   const [ragRetrievalMode, setRagRetrievalMode] = useState<RagRetrievalMode>(initialRagSettings.retrievalMode);
   const [ragRewriteQueryEnabled, setRagRewriteQueryEnabled] = useState(initialRagSettings.rewriteQuery);
   const [ragCompareModesEnabled, setRagCompareModesEnabled] = useState(initialRagSettings.compareModes);
+  const [ragAskClarificationOnLowRelevance, setRagAskClarificationOnLowRelevance] = useState(
+    initialRagSettings.askClarificationOnLowRelevance,
+  );
   const [isMcpGithubEnabled, setIsMcpGithubEnabled] = useState(initialMcpGithubSettings.enabled);
   const [mcpGithubBaseUrl, setMcpGithubBaseUrl] = useState(initialMcpGithubSettings.baseUrl);
   const [mcpGithubUsername, setMcpGithubUsername] = useState(initialMcpGithubSettings.username);
@@ -274,6 +277,7 @@ export function SearchPage() {
       retrievalMode: ragRetrievalMode,
       rewriteQuery: ragRewriteQueryEnabled,
       compareModes: ragCompareModesEnabled,
+      askClarificationOnLowRelevance: ragAskClarificationOnLowRelevance,
     });
   }, [
     isRagEnabled,
@@ -285,6 +289,7 @@ export function SearchPage() {
     ragRetrievalMode,
     ragRewriteQueryEnabled,
     ragCompareModesEnabled,
+    ragAskClarificationOnLowRelevance,
   ]);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
@@ -1600,6 +1605,16 @@ export function SearchPage() {
                         <FormControlLabel
                           control={<Switch checked={ragCompareModesEnabled} onChange={(event) => setRagCompareModesEnabled(event.target.checked)} />}
                           label="Сравнение режимов (backend flag)"
+                        />
+
+                        <FormControlLabel
+                          control={
+                            <Checkbox
+                              checked={ragAskClarificationOnLowRelevance}
+                              onChange={(event) => setRagAskClarificationOnLowRelevance(event.target.checked)}
+                            />
+                          }
+                          label='Спрашивать уточнение'
                         />
 
                         <Box>

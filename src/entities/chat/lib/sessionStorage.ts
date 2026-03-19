@@ -29,6 +29,7 @@ type StoredChatSession = {
   id?: unknown;
   createdAt?: unknown;
   parentChatId?: unknown;
+  ragClarificationAttempts?: unknown;
   profileId?: unknown;
   taskId?: unknown;
   taskState?: unknown;
@@ -398,6 +399,7 @@ export function createChatSession(params?: {
   id?: string;
   createdAt?: string;
   parentChatId?: string | null;
+  ragClarificationAttempts?: number;
   profileId?: UserProfileId;
   taskId?: ChatTaskId;
   taskState?: ChatTaskState | null;
@@ -413,6 +415,12 @@ export function createChatSession(params?: {
     id: params?.id ?? createSessionId(),
     createdAt: params?.createdAt ?? new Date().toISOString(),
     parentChatId: typeof params?.parentChatId === 'string' ? params.parentChatId : null,
+    ragClarificationAttempts:
+      typeof params?.ragClarificationAttempts === 'number' &&
+      Number.isInteger(params.ragClarificationAttempts) &&
+      params.ragClarificationAttempts >= 0
+        ? params.ragClarificationAttempts
+        : 0,
     profileId: params?.profileId ?? DEFAULT_USER_PROFILE_ID,
     taskId: params?.taskId ?? 'none',
     taskState:
@@ -477,6 +485,12 @@ function normalizeChatSession(value: unknown): NormalizeChatSessionResult {
       id: candidate.id,
       createdAt: candidate.createdAt,
       parentChatId: typeof candidate.parentChatId === 'string' ? candidate.parentChatId : null,
+      ragClarificationAttempts:
+        typeof candidate.ragClarificationAttempts === 'number' &&
+        Number.isInteger(candidate.ragClarificationAttempts) &&
+        candidate.ragClarificationAttempts >= 0
+          ? candidate.ragClarificationAttempts
+          : 0,
       profileId: isValidUserProfileId(candidate.profileId) ? candidate.profileId : DEFAULT_USER_PROFILE_ID,
       taskId,
       taskState,

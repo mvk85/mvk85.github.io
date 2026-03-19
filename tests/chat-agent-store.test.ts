@@ -448,4 +448,151 @@ describe('chat agent store', () => {
     expect(assistantMessage?.content).toContain('http://localhost:3001/downloads/openclaw_openclaw_issues.txt');
     expect(assistantMessage?.content).not.toContain('"type":"mcp"');
   });
+
+  it('asks RAG clarification no more than three times when relevance is below threshold', async () => {
+    const { createChatAgentStore } = await import('../src/processes/chat-agent/model/store');
+    getBalanceMock.mockResolvedValue(100);
+
+    localStorage.setItem(
+      'rag_settings_v1',
+      JSON.stringify({
+        enabled: true,
+        baseUrl: 'http://localhost:5001',
+        selectedIndexIds: ['idx-1'],
+        minScore: 0.5,
+        askClarificationOnLowRelevance: true,
+      }),
+    );
+
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url === 'http://localhost:5001/rag/retrieve/multi') {
+        return {
+          ok: true,
+          status: 200,
+          statusText: 'OK',
+          text: async () =>
+            JSON.stringify({
+              indexIds: ['idx-1'],
+              searchedIndexIds: ['idx-1'],
+              missingIndexIds: [],
+              matches: [
+                {
+                  indexId: 'idx-1',
+                  score: 0.12,
+                  text: 'low relevance',
+                  metadata: {
+                    source: 'local-file',
+                    file: 'kb.md',
+                    title: 'KB',
+                    section: 'intro',
+                    chunk_id: 'c1',
+                    strategy: 'structured',
+                    token_count: 10,
+                  },
+                },
+              ],
+            }),
+        };
+      }
+      throw new Error(`Unexpected fetch url: ${url}`);
+    });
+
+    const store = createChatAgentStore();
+    store.getState().setInputValue('первый вопрос');
+    await store.getState().sendUserMessage();
+    store.getState().setInputValue('второй вопрос');
+    await store.getState().sendUserMessage();
+    store.getState().setInputValue('третий вопрос');
+    await store.getState().sendUserMessage();
+
+    expect(createChatCompletionMock).toHaveBeenCalledTimes(0);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(store.getState().currentChat.ragClarificationAttempts).toBe(3);
+
+    const assistantMessages = store.getState().currentChat.messages.filter((message) => message.role === 'assistant');
+    expect(assistantMessages).toHaveLength(3);
+    expect(assistantMessages[0]?.content).toContain('Не знаю');
+    expect(assistantMessages[2]?.content).toContain('3/3');
+  });
+
+  it('falls back to standard LLM path after third RAG clarification request', async () => {
+    const { createChatAgentStore } = await import('../src/processes/chat-agent/model/store');
+    getBalanceMock.mockResolvedValue(100);
+
+    localStorage.setItem(
+      'rag_settings_v1',
+      JSON.stringify({
+        enabled: true,
+        baseUrl: 'http://localhost:5001',
+        selectedIndexIds: ['idx-1'],
+        minScore: 0.5,
+        askClarificationOnLowRelevance: true,
+      }),
+    );
+
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url === 'http://localhost:5001/rag/retrieve/multi') {
+        return {
+          ok: true,
+          status: 200,
+          statusText: 'OK',
+          text: async () =>
+            JSON.stringify({
+              indexIds: ['idx-1'],
+              searchedIndexIds: ['idx-1'],
+              missingIndexIds: [],
+              matches: [
+                {
+                  indexId: 'idx-1',
+                  score: 0.12,
+                  text: 'low relevance',
+                  metadata: {
+                    source: 'local-file',
+                    file: 'kb.md',
+                    title: 'KB',
+                    section: 'intro',
+                    chunk_id: 'c1',
+                    strategy: 'structured',
+                    token_count: 10,
+                  },
+                },
+              ],
+            }),
+        };
+      }
+      throw new Error(`Unexpected fetch url: ${url}`);
+    });
+
+    createChatCompletionMock
+      .mockResolvedValueOnce({
+        choices: [{ message: { content: '{"goal":"g","tasks":[],"current_focus":"f","constraints":[],"updated_at":"2026-03-11T00:00:00.000Z"}' } }],
+        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+      })
+      .mockResolvedValueOnce({
+        choices: [{ message: { content: '{"items":[]}' } }],
+        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+      })
+      .mockResolvedValueOnce({
+        choices: [{ message: { content: 'ok' } }],
+        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+      });
+
+    const store = createChatAgentStore();
+    store.getState().setInputValue('первый вопрос');
+    await store.getState().sendUserMessage();
+    store.getState().setInputValue('второй вопрос');
+    await store.getState().sendUserMessage();
+    store.getState().setInputValue('третий вопрос');
+    await store.getState().sendUserMessage();
+    store.getState().setInputValue('четвертый вопрос');
+    await store.getState().sendUserMessage();
+
+    expect(createChatCompletionMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(store.getState().currentChat.ragClarificationAttempts).toBe(3);
+
+    const assistantMessages = store.getState().currentChat.messages.filter((message) => message.role === 'assistant');
+    expect(assistantMessages).toHaveLength(4);
+    expect(assistantMessages[3]?.content).toBe('ok');
+  });
 });

@@ -53,7 +53,7 @@ import { prependMcpPipelineGithubIssuesToContext } from '@/processes/chat-agent/
 import {
   resolveMcpPipelineAssistantCommand,
 } from '@/processes/chat-agent/lib/mcpPipelineGithubIssuesRuntime';
-import { DEFAULT_RAG_TOP_K, loadRagSettings } from '@/processes/chat-agent/lib/ragSettings';
+import { DEFAULT_RAG_TOP_K, loadRagSettings, type RagSettings } from '@/processes/chat-agent/lib/ragSettings';
 import { getChatStats, initializeChatStats, removeChatStats, saveChatStats } from '@/processes/chat-agent/lib/chatStatsStorage';
 import type { ChatAgentState, ChatStatsState, PendingIssueReportSummaryState, RequestStatus } from '@/processes/chat-agent/model/types';
 import type { ScheduledEvent } from '@/processes/chat-agent/model/schedulerTypes';
@@ -96,10 +96,12 @@ type RagRetrievalOutput = {
   sources: ChatMessageRagSource[];
   modeComparison: ChatMessageRagModeComparison | null;
   warningMessage: string | null;
+  isBelowRelevanceThreshold: boolean;
 };
 
 const RAG_WARNING_TIMEOUT_MS = 10_000;
 const RAG_CHUNK_MAX_LENGTH = 1500;
+const MAX_RAG_CLARIFICATION_ATTEMPTS = 3;
 
 function clampRagScore(value: number): number {
   if (!Number.isFinite(value)) {
@@ -155,6 +157,14 @@ function buildRagContextMessage(matches: RagRetrieveMatch[]): LlmMessage {
     role: 'system',
     content: `Используй только этот контекст как внешнюю базу знаний. Если данных недостаточно, явно скажи об этом.\nКонтекст RAG:\n${blocks.join('\n\n')}`,
   };
+}
+
+function buildRagClarificationMessage(attemptNumber: number): string {
+  if (attemptNumber >= MAX_RAG_CLARIFICATION_ATTEMPTS) {
+    return `Не знаю. Уточните, пожалуйста, запрос (попытка ${MAX_RAG_CLARIFICATION_ATTEMPTS}/${MAX_RAG_CLARIFICATION_ATTEMPTS}; добавьте больше деталей: термин, сущность, источник или пример).`;
+  }
+
+  return `Не знаю. Уточните, пожалуйста, запрос (попытка ${attemptNumber}/${MAX_RAG_CLARIFICATION_ATTEMPTS}).`;
 }
 
 function createEmptyUsage(): ChatCompletionUsage {
@@ -454,14 +464,15 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
       return getSchedulerWizardIntroMessage();
     };
 
-    const resolveRagRetrieval = async (query: string, signal: AbortSignal): Promise<RagRetrievalOutput> => {
-      const ragSettings = loadRagSettings();
+    const resolveRagRetrieval = async (query: string, signal: AbortSignal, overrideSettings?: RagSettings): Promise<RagRetrievalOutput> => {
+      const ragSettings = overrideSettings ?? loadRagSettings();
       if (!ragSettings.enabled || ragSettings.selectedIndexIds.length === 0) {
         return {
           contextMessage: null,
           sources: [],
           modeComparison: null,
           warningMessage: null,
+          isBelowRelevanceThreshold: false,
         };
       }
 
@@ -473,6 +484,7 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
           sources: [],
           modeComparison: null,
           warningMessage: null,
+          isBelowRelevanceThreshold: false,
         };
       }
 
@@ -530,6 +542,7 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
             sources: [],
             modeComparison: null,
             warningMessage: `RAG: не удалось получить контекст (${normalizeError(fallbackError)}).`,
+            isBelowRelevanceThreshold: false,
           };
         }
       }
@@ -544,6 +557,7 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
           sources: [],
           modeComparison,
           warningMessage,
+          isBelowRelevanceThreshold: true,
         };
       }
 
@@ -552,6 +566,7 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
         sources: filtered.map(toRagSource),
         modeComparison,
         warningMessage,
+        isBelowRelevanceThreshold: false,
       };
     };
 
@@ -1208,6 +1223,42 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
             return;
           }
 
+          const ragSettings = loadRagSettings();
+          const ragRetrieval = await resolveRagRetrieval(userMessage.content, signal, ragSettings);
+          if (!isRequestActive()) {
+            return;
+          }
+          setRagWarning(ragRetrieval.warningMessage);
+
+          const shouldAskClarificationOnLowRelevance =
+            ragSettings.enabled &&
+            ragSettings.askClarificationOnLowRelevance &&
+            ragRetrieval.isBelowRelevanceThreshold &&
+            chatForRequest.ragClarificationAttempts < MAX_RAG_CLARIFICATION_ATTEMPTS;
+
+          if (shouldAskClarificationOnLowRelevance) {
+            const nextAttempt = chatForRequest.ragClarificationAttempts + 1;
+            const assistantMessage: ChatMessage = {
+              id: getNextMessageId(chatForRequest.messages),
+              role: 'assistant',
+              content: buildRagClarificationMessage(nextAttempt),
+            };
+            const updatedCurrentChat: ChatSession = {
+              ...chatForRequest,
+              ragClarificationAttempts: nextAttempt,
+              messages: [...chatForRequest.messages, assistantMessage],
+            };
+            nextHistoryState = syncChatToHistory(nextHistoryState, updatedCurrentChat);
+            persistSessions(updatedCurrentChat, nextHistoryState);
+            set({
+              status: 'success',
+              activeRequestId: null,
+              showThinkingLoader: true,
+            });
+            activeController = null;
+            return;
+          }
+
           if (currentWithUserMessage.contextStrategy === 'strategy-2') {
             const factPayload = buildChatCompletionPayload(
               [
@@ -1299,14 +1350,6 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
           );
           const contextWithMemory = prependMemoryToContext(contextMessages, nextWorkingMemory, nextLongTermMemory);
           const contextWithProfile = prependUserProfileToContext(contextWithMemory, chatForRequest.profileId);
-          const ragRetrieval = await resolveRagRetrieval(userMessage.content, signal);
-          if (!isRequestActive()) {
-            return;
-          }
-          if (ragRetrieval.warningMessage) {
-            setRagWarning(ragRetrieval.warningMessage);
-          }
-
           const contextWithRag = ragRetrieval.contextMessage ? [ragRetrieval.contextMessage, ...contextWithProfile] : contextWithProfile;
           const contextWithMcpPipeline = prependMcpPipelineGithubIssuesToContext(contextWithRag, loadMcpGithubEnabled());
           const contextWithMcpGithub = prependMcpGithubToContext(contextWithMcpPipeline, loadMcpGithubEnabled());
@@ -1346,6 +1389,7 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
           };
           const updatedCurrentChat: ChatSession = {
             ...chatForRequest,
+            ragClarificationAttempts: ragRetrieval.isBelowRelevanceThreshold ? chatForRequest.ragClarificationAttempts : 0,
             messages: [...chatForRequest.messages, assistantMessage],
           };
           nextHistoryState = syncChatToHistory(nextHistoryState, updatedCurrentChat);

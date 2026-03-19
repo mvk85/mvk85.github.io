@@ -12,6 +12,7 @@ type StoredRagSettings = {
   retrievalMode?: unknown;
   rewriteQuery?: unknown;
   compareModes?: unknown;
+  askClarificationOnLowRelevance?: unknown;
 };
 
 export type RagRetrievalMode = 'baseline' | 'threshold' | 'heuristic';
@@ -26,6 +27,7 @@ export type RagSettings = {
   retrievalMode: RagRetrievalMode;
   rewriteQuery: boolean;
   compareModes: boolean;
+  askClarificationOnLowRelevance: boolean;
 };
 
 export const DEFAULT_RAG_MIN_SCORE = 0.5;
@@ -34,6 +36,7 @@ export const DEFAULT_RAG_CANDIDATE_TOP_K = 24;
 export const DEFAULT_RAG_RETRIEVAL_MODE: RagRetrievalMode = 'heuristic';
 export const DEFAULT_RAG_REWRITE_QUERY = true;
 export const DEFAULT_RAG_COMPARE_MODES = false;
+export const DEFAULT_RAG_ASK_CLARIFICATION_ON_LOW_RELEVANCE = false;
 
 function normalizeBaseUrl(value: unknown): string {
   if (typeof value !== 'string') {
@@ -118,6 +121,7 @@ export function loadRagSettings(): RagSettings {
       retrievalMode: DEFAULT_RAG_RETRIEVAL_MODE,
       rewriteQuery: DEFAULT_RAG_REWRITE_QUERY,
       compareModes: DEFAULT_RAG_COMPARE_MODES,
+      askClarificationOnLowRelevance: DEFAULT_RAG_ASK_CLARIFICATION_ON_LOW_RELEVANCE,
     };
   }
 
@@ -134,6 +138,7 @@ export function loadRagSettings(): RagSettings {
         retrievalMode: DEFAULT_RAG_RETRIEVAL_MODE,
         rewriteQuery: DEFAULT_RAG_REWRITE_QUERY,
         compareModes: DEFAULT_RAG_COMPARE_MODES,
+        askClarificationOnLowRelevance: DEFAULT_RAG_ASK_CLARIFICATION_ON_LOW_RELEVANCE,
       };
     }
 
@@ -148,6 +153,10 @@ export function loadRagSettings(): RagSettings {
       retrievalMode: normalizeRetrievalMode(parsed.retrievalMode),
       rewriteQuery: normalizeBoolean(parsed.rewriteQuery, DEFAULT_RAG_REWRITE_QUERY),
       compareModes: normalizeBoolean(parsed.compareModes, DEFAULT_RAG_COMPARE_MODES),
+      askClarificationOnLowRelevance: normalizeBoolean(
+        parsed.askClarificationOnLowRelevance,
+        DEFAULT_RAG_ASK_CLARIFICATION_ON_LOW_RELEVANCE,
+      ),
     };
   } catch {
     return {
@@ -160,6 +169,7 @@ export function loadRagSettings(): RagSettings {
       retrievalMode: DEFAULT_RAG_RETRIEVAL_MODE,
       rewriteQuery: DEFAULT_RAG_REWRITE_QUERY,
       compareModes: DEFAULT_RAG_COMPARE_MODES,
+      askClarificationOnLowRelevance: DEFAULT_RAG_ASK_CLARIFICATION_ON_LOW_RELEVANCE,
     };
   }
 }
@@ -181,6 +191,10 @@ export function saveRagSettings(settings: RagSettings): void {
       retrievalMode: normalizeRetrievalMode(settings.retrievalMode),
       rewriteQuery: normalizeBoolean(settings.rewriteQuery, DEFAULT_RAG_REWRITE_QUERY),
       compareModes: normalizeBoolean(settings.compareModes, DEFAULT_RAG_COMPARE_MODES),
+      askClarificationOnLowRelevance: normalizeBoolean(
+        settings.askClarificationOnLowRelevance,
+        DEFAULT_RAG_ASK_CLARIFICATION_ON_LOW_RELEVANCE,
+      ),
     }),
   );
 }

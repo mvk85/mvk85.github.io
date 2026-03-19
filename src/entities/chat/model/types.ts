@@ -142,6 +142,7 @@ export type ChatSession = {
   id: string;
   createdAt: string;
   parentChatId: string | null;
+  ragClarificationAttempts: number;
   profileId: UserProfileId;
   taskId: ChatTaskId;
   taskState: ChatTaskState | null;
