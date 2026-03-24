@@ -176,6 +176,7 @@ VITE_PROXYAPI_BALANCE_URL=https://api.proxyapi.ru/proxyapi/balance
 # mvk85.github.io
 
 ## Переменные окружения для чата
+- `VITE_OLLAMA_API_URL` - URL локальной модели Ollama (по умолчанию `http://localhost:11434/api/generate`).
 - `VITE_LLM_MODEL_MAIN` - основная модель для ответов.
 - `VITE_LLM_MODEL_SUMMARY` - модель для summary (опционально, fallback на `VITE_LLM_MODEL_MAIN`).
 - `VITE_SUMMARY_CHUNK_SIZE` - размер батча для summary (по умолчанию `5`).

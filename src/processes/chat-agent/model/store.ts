@@ -58,11 +58,12 @@ import { getChatStats, initializeChatStats, removeChatStats, saveChatStats } fro
 import type { ChatAgentState, ChatStatsState, PendingIssueReportSummaryState, RequestStatus } from '@/processes/chat-agent/model/types';
 import type { ScheduledEvent } from '@/processes/chat-agent/model/schedulerTypes';
 import { HttpError } from '@/shared/api/client';
-import { openAiProxyChatApi } from '@/shared/api/openAiProxyChatApi';
+import { llmApi } from '@/shared/api/llmApi';
 import { ragApi, type RagModeComparison, type RagRetrieveMatch } from '@/shared/api/ragApi';
 import { env } from '@/shared/config/env';
 import { CHAT_MODEL_OPTIONS, type ChatModel } from '@/shared/config/llmModels';
 import { normalizeError } from '@/shared/lib/errors';
+import { loadChatAgentSettings } from '@/processes/chat-agent/lib/chatAgentSettings';
 
 type ChatAgentActions = {
   setInputValue: (value: string) => void;
@@ -203,6 +204,14 @@ function resolveRequestCost(balanceBefore: number, balanceAfter: number): number
   }
 
   return requestCost;
+}
+
+function isBalanceTrackingEnabled(): boolean {
+  return loadChatAgentSettings().requestBalance;
+}
+
+function isMemoryEnabled(): boolean {
+  return loadChatAgentSettings().memoryEnabled;
 }
 
 function extractAssistantText(response: { choices?: Array<{ message?: { content?: string | null } }> }): string {
@@ -672,7 +681,7 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
       const payload = buildChatCompletionPayload(contextWithOrganizer, selectedModel);
 
       try {
-        const response = await openAiProxyChatApi.createChatCompletion(payload, { signal });
+        const response = await llmApi.createChatCompletion(payload, { signal });
         const assistantRawText = extractAssistantText(response);
         const resolved = await resolveAssistantCommandText(assistantRawText, signal, true, false, (stepName) => {
           appendAssistantMessageToCurrentChat(`Выполняется шаг pipeline: ${stepName}...`);
@@ -803,12 +812,15 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
       },
 
       refreshInitialBalance: async () => {
+        if (!isBalanceTrackingEnabled()) {
+          return;
+        }
         const currentState = get();
         if (currentState.statsState.previousBalance !== null) {
           return;
         }
 
-        const balance = await openAiProxyChatApi.getBalance();
+        const balance = await llmApi.getBalance();
         set((previousState) => {
           const nextState = {
             ...previousState.statsState,
@@ -1146,9 +1158,12 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
         });
 
         try {
+          const requestBalanceEnabled = isBalanceTrackingEnabled();
           const currentBalanceState = get().statsState.previousBalance;
-          const balanceBefore = await (currentBalanceState === null ? openAiProxyChatApi.getBalance({ signal }) : Promise.resolve(currentBalanceState));
-          if (!isRequestActive()) {
+          const balanceBefore = requestBalanceEnabled
+            ? await (currentBalanceState === null ? llmApi.getBalance({ signal }) : Promise.resolve(currentBalanceState))
+            : null;
+          if (requestBalanceEnabled && !isRequestActive()) {
             return;
           }
 
@@ -1162,7 +1177,7 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
               userInput: userMessage.content,
               llmCall: async (taskMessages) => {
                 const payload = buildChatCompletionPayload(taskMessages, selectedModel);
-                const response = await openAiProxyChatApi.createChatCompletion(payload, { signal });
+                const response = await llmApi.createChatCompletion(payload, { signal });
                 return {
                   text: extractAssistantText(response),
                   usage: extractUsageSafe(response),
@@ -1187,17 +1202,18 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
             nextHistoryState = syncChatToHistory(nextHistoryState, updatedCurrentChat);
             persistSessions(updatedCurrentChat, nextHistoryState);
 
-            const balanceAfter = await openAiProxyChatApi.getBalance({ signal });
-            if (!isRequestActive()) {
+            const balanceAfter = requestBalanceEnabled ? await llmApi.getBalance({ signal }) : null;
+            if (requestBalanceEnabled && !isRequestActive()) {
               return;
             }
-            const requestCost = resolveRequestCost(balanceBefore, balanceAfter);
+            const requestCost =
+              requestBalanceEnabled && balanceBefore !== null && balanceAfter !== null ? resolveRequestCost(balanceBefore, balanceAfter) : 0;
 
             set((previousState) => {
               const stats = getChatStats(previousState.statsState, updatedCurrentChat.id);
               const nextStatsState: ChatStatsState = {
                 ...previousState.statsState,
-                previousBalance: balanceAfter,
+                previousBalance: balanceAfter ?? previousState.statsState.previousBalance,
                 byChat: {
                   ...previousState.statsState.byChat,
                   [updatedCurrentChat.id]: {
@@ -1270,7 +1286,7 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
               ],
               selectedModel,
             );
-            const factResponse = await openAiProxyChatApi.createChatCompletion(factPayload, { signal });
+            const factResponse = await llmApi.createChatCompletion(factPayload, { signal });
             if (!isRequestActive()) {
               return;
             }
@@ -1291,55 +1307,59 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
             persistSessions(chatForRequest, nextHistoryState);
           }
 
+          const memoryEnabled = isMemoryEnabled();
           let nextWorkingMemory = get().workingMemoryByChat[chatForRequest.id] ?? null;
-          try {
-            const workingMemoryPayload = buildChatCompletionPayload(
-              buildWorkingMemoryExtractionMessages(chatForRequest.messages, nextWorkingMemory),
-              selectedModel,
-            );
-            const workingMemoryResponse = await openAiProxyChatApi.createChatCompletion(workingMemoryPayload, { signal });
-            if (!isRequestActive()) {
-              return;
-            }
-            const parsedWorkingMemory = parseWorkingMemory(extractAssistantText(workingMemoryResponse));
-            const workingMemoryByChatNext = {
-              ...get().workingMemoryByChat,
-              [chatForRequest.id]: parsedWorkingMemory,
-            };
-            nextWorkingMemory = parsedWorkingMemory;
-            persistWorkingMemoryByChat(workingMemoryByChatNext);
-            accumulatedUsage = addUsage(accumulatedUsage, extractUsageSafe(workingMemoryResponse));
-          } catch (error: unknown) {
-            if (!isAbortError(error)) {
-              const normalized = normalizeError(error);
-              console.error('[memory] working memory extraction failed', error);
-              set({ memoryErrorMessage: `Рабочая память: ${normalized}` });
-            }
-          }
-
           let nextLongTermMemory = get().longTermMemory;
-          try {
-            const longTermPayload = buildChatCompletionPayload(
-              buildLongTermMemoryExtractionMessages(chatForRequest.messages, nextLongTermMemory),
-              selectedModel,
-            );
-            const longTermResponse = await openAiProxyChatApi.createChatCompletion(longTermPayload, { signal });
-            if (!isRequestActive()) {
-              return;
+
+          if (memoryEnabled) {
+            try {
+              const workingMemoryPayload = buildChatCompletionPayload(
+                buildWorkingMemoryExtractionMessages(chatForRequest.messages, nextWorkingMemory),
+                selectedModel,
+              );
+              const workingMemoryResponse = await llmApi.createChatCompletion(workingMemoryPayload, { signal });
+              if (!isRequestActive()) {
+                return;
+              }
+              const parsedWorkingMemory = parseWorkingMemory(extractAssistantText(workingMemoryResponse));
+              const workingMemoryByChatNext = {
+                ...get().workingMemoryByChat,
+                [chatForRequest.id]: parsedWorkingMemory,
+              };
+              nextWorkingMemory = parsedWorkingMemory;
+              persistWorkingMemoryByChat(workingMemoryByChatNext);
+              accumulatedUsage = addUsage(accumulatedUsage, extractUsageSafe(workingMemoryResponse));
+            } catch (error: unknown) {
+              if (!isAbortError(error)) {
+                const normalized = normalizeError(error);
+                console.error('[memory] working memory extraction failed', error);
+                set({ memoryErrorMessage: `Рабочая память: ${normalized}` });
+              }
             }
-            const parsedLongTermMemory = parseLongTermMemory(extractAssistantText(longTermResponse));
-            nextLongTermMemory = parsedLongTermMemory;
-            persistLongTermMemory(parsedLongTermMemory);
-            accumulatedUsage = addUsage(accumulatedUsage, extractUsageSafe(longTermResponse));
-          } catch (error: unknown) {
-            if (!isAbortError(error)) {
-              const normalized = normalizeError(error);
-              console.error('[memory] long-term memory extraction failed', error);
-              set((previousState) => ({
-                memoryErrorMessage: previousState.memoryErrorMessage
-                  ? `${previousState.memoryErrorMessage}\nДолговременная память: ${normalized}`
-                  : `Долговременная память: ${normalized}`,
-              }));
+
+            try {
+              const longTermPayload = buildChatCompletionPayload(
+                buildLongTermMemoryExtractionMessages(chatForRequest.messages, nextLongTermMemory),
+                selectedModel,
+              );
+              const longTermResponse = await llmApi.createChatCompletion(longTermPayload, { signal });
+              if (!isRequestActive()) {
+                return;
+              }
+              const parsedLongTermMemory = parseLongTermMemory(extractAssistantText(longTermResponse));
+              nextLongTermMemory = parsedLongTermMemory;
+              persistLongTermMemory(parsedLongTermMemory);
+              accumulatedUsage = addUsage(accumulatedUsage, extractUsageSafe(longTermResponse));
+            } catch (error: unknown) {
+              if (!isAbortError(error)) {
+                const normalized = normalizeError(error);
+                console.error('[memory] long-term memory extraction failed', error);
+                set((previousState) => ({
+                  memoryErrorMessage: previousState.memoryErrorMessage
+                    ? `${previousState.memoryErrorMessage}\nДолговременная память: ${normalized}`
+                    : `Долговременная память: ${normalized}`,
+                }));
+              }
             }
           }
 
@@ -1348,14 +1368,16 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
             chatForRequest.messages,
             chatForRequest.strategySettings,
           );
-          const contextWithMemory = prependMemoryToContext(contextMessages, nextWorkingMemory, nextLongTermMemory);
+          const contextWithMemory = memoryEnabled
+            ? prependMemoryToContext(contextMessages, nextWorkingMemory, nextLongTermMemory)
+            : contextMessages;
           const contextWithProfile = prependUserProfileToContext(contextWithMemory, chatForRequest.profileId);
           const contextWithRag = ragRetrieval.contextMessage ? [ragRetrieval.contextMessage, ...contextWithProfile] : contextWithProfile;
           const contextWithMcpPipeline = prependMcpPipelineGithubIssuesToContext(contextWithRag, loadMcpGithubEnabled());
           const contextWithMcpGithub = prependMcpGithubToContext(contextWithMcpPipeline, loadMcpGithubEnabled());
           const contextWithOrganizer = prependOrganizerSchedulerToContext(contextWithMcpGithub, loadMcpGithubEnabled());
           const payload = buildChatCompletionPayload(contextWithOrganizer, selectedModel);
-          const response = await openAiProxyChatApi.createChatCompletion(payload, { signal });
+          const response = await llmApi.createChatCompletion(payload, { signal });
           if (!isRequestActive()) {
             return;
           }
@@ -1367,11 +1389,12 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
             set({ showThinkingLoader: false });
             appendAssistantMessageToCurrentChat(`Выполняется шаг pipeline: ${stepName}...`);
           });
-          const balanceAfter = await openAiProxyChatApi.getBalance({ signal });
-          if (!isRequestActive()) {
+          const balanceAfter = requestBalanceEnabled ? await llmApi.getBalance({ signal }) : null;
+          if (requestBalanceEnabled && !isRequestActive()) {
             return;
           }
-          const requestCost = resolveRequestCost(balanceBefore, balanceAfter);
+          const requestCost =
+            requestBalanceEnabled && balanceBefore !== null && balanceAfter !== null ? resolveRequestCost(balanceBefore, balanceAfter) : 0;
 
           const assistantMessage: ChatMessage = {
             id: getNextMessageId(chatForRequest.messages),
@@ -1399,7 +1422,7 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
             const stats = getChatStats(previousState.statsState, updatedCurrentChat.id);
             const nextStatsState: ChatStatsState = {
               ...previousState.statsState,
-              previousBalance: balanceAfter,
+              previousBalance: balanceAfter ?? previousState.statsState.previousBalance,
               byChat: {
                 ...previousState.statsState.byChat,
                 [updatedCurrentChat.id]: {
@@ -1812,6 +1835,7 @@ export function getChatAgentDerived(state: ChatAgentStoreState) {
     completionTokens: currentChatStats.completionTokens,
     totalTokens: currentChatStats.totalTokens,
     totalCost: currentChatStats.totalCost,
+    shouldShowCost: isBalanceTrackingEnabled(),
     workingMemory: currentWorkingMemory,
     userMessageCount,
     isLimitReached,

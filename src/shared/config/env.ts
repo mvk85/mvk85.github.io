@@ -29,6 +29,7 @@ const openAiApiUrl =
   (import.meta.env.VITE_OPENAI_API_URL as string | undefined) ?? 'https://openai.api.proxyapi.ru/v1/chat/completions';
 const proxyApiBalanceUrl =
   (import.meta.env.VITE_PROXYAPI_BALANCE_URL as string | undefined) ?? 'https://api.proxyapi.ru/proxyapi/balance';
+const ollamaApiUrl = (import.meta.env.VITE_OLLAMA_API_URL as string | undefined) ?? 'http://localhost:11434/api/generate';
 
 const llmModelMain =
   (import.meta.env.VITE_LLM_MODEL_MAIN as string | undefined) ??
@@ -47,6 +48,7 @@ export const env = {
   openAiApiKey,
   openAiApiUrl,
   proxyApiBalanceUrl,
+  ollamaApiUrl,
   llmModelMain,
   llmModelSummary,
   summaryChunkSize,

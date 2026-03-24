@@ -35,5 +35,8 @@ mcp_enabled = ${mcpEnabled ? 'true' : 'false'}
 }
 
 export function prependOrganizerSchedulerToContext(contextMessages: LlmMessage[], mcpEnabled: boolean): LlmMessage[] {
+  if (!mcpEnabled) {
+    return contextMessages;
+  }
   return [buildOrganizerSchedulerSystemMessage(mcpEnabled), ...contextMessages];
 }

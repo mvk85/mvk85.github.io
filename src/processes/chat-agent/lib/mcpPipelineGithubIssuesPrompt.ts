@@ -49,5 +49,8 @@ mcp_github_enabled = ${enabled ? 'true' : 'false'}
 }
 
 export function prependMcpPipelineGithubIssuesToContext(contextMessages: LlmMessage[], enabled: boolean): LlmMessage[] {
+  if (!enabled) {
+    return contextMessages;
+  }
   return [buildMcpPipelineGithubIssuesSystemMessage(enabled), ...contextMessages];
 }

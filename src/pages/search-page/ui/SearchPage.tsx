@@ -59,6 +59,7 @@ import {
 import { ragApi, type RagHealthResponse, type RagIndexListItem } from '@/shared/api/ragApi';
 import { env } from '@/shared/config/env';
 import { normalizeError } from '@/shared/lib/errors';
+import { loadChatAgentSettings, saveChatAgentSettings } from '@/processes/chat-agent/lib/chatAgentSettings';
 
 function formatRubles(value: number): string {
   return `${value.toFixed(6).replace('.', ',')} ₽`;
@@ -114,7 +115,7 @@ function formatRagModeTitle(mode: ChatMessageRagMode): string {
 }
 
 type MemoryTab = 'short-term' | 'working' | 'long-term';
-type AgentSettingsTab = 'mcp' | 'rag';
+type AgentSettingsTab = 'llm' | 'mcp' | 'rag';
 
 type McpGithubHealthResponse = {
   status?: {
@@ -161,6 +162,7 @@ function isRagEmbeddingsConfigured(payload: unknown): boolean {
 }
 
 export function SearchPage() {
+  const initialChatAgentSettings = loadChatAgentSettings();
   const initialMcpGithubSettings = loadMcpGithubSettings();
   const initialRagSettings = loadRagSettings();
   const [strategy1WindowInput, setStrategy1WindowInput] = useState('10');
@@ -169,8 +171,10 @@ export function SearchPage() {
   const [historyMenuChatId, setHistoryMenuChatId] = useState<string | null>(null);
   const [isMemoryDrawerOpen, setIsMemoryDrawerOpen] = useState(false);
   const [activeMemoryTab, setActiveMemoryTab] = useState<MemoryTab>('short-term');
+  const [memoryEnabled, setMemoryEnabled] = useState(initialChatAgentSettings.memoryEnabled);
   const [isAgentSettingsDrawerOpen, setIsAgentSettingsDrawerOpen] = useState(false);
-  const [activeAgentSettingsTab, setActiveAgentSettingsTab] = useState<AgentSettingsTab>('mcp');
+  const [activeAgentSettingsTab, setActiveAgentSettingsTab] = useState<AgentSettingsTab>('llm');
+  const [requestBalanceEnabled, setRequestBalanceEnabled] = useState(initialChatAgentSettings.requestBalance);
   const [isRagEnabled, setIsRagEnabled] = useState(initialRagSettings.enabled);
   const [ragBaseUrl, setRagBaseUrl] = useState(initialRagSettings.baseUrl || env.ragApiBaseUrl);
   const [ragCheckStatus, setRagCheckStatus] = useState<RagConnectionStatus>('idle');
@@ -240,6 +244,7 @@ export function SearchPage() {
     setInputValue,
     switchToHistoryChat,
     totalCost,
+    shouldShowCost,
     userMessageCount,
     workingMemory,
   } = useChat();
@@ -265,6 +270,13 @@ export function SearchPage() {
       username: mcpGithubUsername,
     });
   }, [isMcpGithubEnabled, mcpGithubBaseUrl, mcpGithubUsername]);
+
+  useEffect(() => {
+    saveChatAgentSettings({
+      requestBalance: requestBalanceEnabled,
+      memoryEnabled,
+    });
+  }, [requestBalanceEnabled, memoryEnabled]);
 
   useEffect(() => {
     saveRagSettings({
@@ -1035,7 +1047,7 @@ export function SearchPage() {
                   <Typography variant="body2">Токены запроса: {promptTokens}</Typography>
                   <Typography variant="body2">Токены ответа: {completionTokens}</Typography>
                   <Typography variant="body2">Токены всего: {totalTokens}</Typography>
-                  <Typography variant="body2">Общая стоимость: {formatRubles(totalCost)}</Typography>
+                  {shouldShowCost ? <Typography variant="body2">Общая стоимость: {formatRubles(totalCost)}</Typography> : null}
                   <Typography variant="body2">Модель (текущий чат): {model}</Typography>
                 </Stack>
               </Stack>
@@ -1316,9 +1328,21 @@ export function SearchPage() {
           </Tabs>
 
           <Box sx={{ flexGrow: 1, overflowY: 'auto', p: 2 }}>
+            <FormControlLabel
+              sx={{ mb: 2 }}
+              control={<Switch checked={memoryEnabled} onChange={(event) => setMemoryEnabled(event.target.checked)} />}
+              label="Включить память"
+            />
+
             {memoryErrorMessage ? (
               <Alert severity="warning" sx={{ mb: 2, whiteSpace: 'pre-wrap' }}>
                 {memoryErrorMessage}
+              </Alert>
+            ) : null}
+
+            {!memoryEnabled ? (
+              <Alert severity="info" sx={{ mb: 2 }}>
+                Память отключена: отдельные LLM-запросы на рабочую и долговременную память не выполняются.
               </Alert>
             ) : null}
 
@@ -1430,11 +1454,24 @@ export function SearchPage() {
             variant="fullWidth"
             sx={{ px: 2 }}
           >
+            <Tab value="llm" label="LLM" />
             <Tab value="mcp" label="MCP" />
             <Tab value="rag" label="RAG" />
           </Tabs>
 
           <Box sx={{ flexGrow: 1, overflowY: 'auto', p: 2 }}>
+            {activeAgentSettingsTab === 'llm' ? (
+              <Stack spacing={1.5}>
+                <Typography variant="subtitle1" fontWeight={700}>
+                  LLM
+                </Typography>
+                <FormControlLabel
+                  control={<Switch checked={requestBalanceEnabled} onChange={(event) => setRequestBalanceEnabled(event.target.checked)} />}
+                  label="Запрашивать баланс"
+                />
+              </Stack>
+            ) : null}
+
             {activeAgentSettingsTab === 'mcp' ? (
               <Stack spacing={1.5}>
                 <Typography variant="subtitle1" fontWeight={700}>

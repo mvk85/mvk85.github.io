@@ -32,8 +32,8 @@ const createChatCompletionMock = vi.fn();
 const getBalanceMock = vi.fn();
 const fetchMock = vi.fn();
 
-vi.mock('../src/shared/api/openAiProxyChatApi', () => ({
-  openAiProxyChatApi: {
+vi.mock('../src/shared/api/llmApi', () => ({
+  llmApi: {
     createChatCompletion: (...args: unknown[]) => createChatCompletionMock(...args),
     getBalance: (...args: unknown[]) => getBalanceMock(...args),
   },
@@ -51,9 +51,71 @@ beforeEach(() => {
   createChatCompletionMock.mockReset();
   getBalanceMock.mockReset();
   fetchMock.mockReset();
+  localStorage.setItem(
+    'chat_agent_settings_v1',
+    JSON.stringify({
+      requestBalance: true,
+      memoryEnabled: true,
+    }),
+  );
 });
 
 describe('chat agent store', () => {
+  it('skips balance calls when requestBalance setting is disabled', async () => {
+    const { createChatAgentStore } = await import('../src/processes/chat-agent/model/store');
+    localStorage.setItem(
+      'chat_agent_settings_v1',
+      JSON.stringify({
+        requestBalance: false,
+        memoryEnabled: true,
+      }),
+    );
+
+    createChatCompletionMock
+      .mockResolvedValueOnce({
+        choices: [{ message: { content: '{"goal":"g","tasks":[],"current_focus":"f","constraints":[],"updated_at":"2026-03-11T00:00:00.000Z"}' } }],
+        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+      })
+      .mockResolvedValueOnce({
+        choices: [{ message: { content: '{"items":[]}' } }],
+        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+      })
+      .mockResolvedValueOnce({
+        choices: [{ message: { content: 'ok' } }],
+        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+      });
+
+    const store = createChatAgentStore();
+    store.getState().setInputValue('привет');
+    await store.getState().sendUserMessage();
+
+    expect(getBalanceMock).not.toHaveBeenCalled();
+    expect(store.getState().status).toBe('success');
+  });
+
+  it('skips memory LLM calls when memory setting is disabled', async () => {
+    const { createChatAgentStore } = await import('../src/processes/chat-agent/model/store');
+    localStorage.setItem(
+      'chat_agent_settings_v1',
+      JSON.stringify({
+        requestBalance: false,
+        memoryEnabled: false,
+      }),
+    );
+
+    createChatCompletionMock.mockResolvedValueOnce({
+      choices: [{ message: { content: 'ok' } }],
+      usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+    });
+
+    const store = createChatAgentStore();
+    store.getState().setInputValue('привет');
+    await store.getState().sendUserMessage();
+
+    expect(createChatCompletionMock).toHaveBeenCalledTimes(1);
+    expect(store.getState().status).toBe('success');
+  });
+
   it('aborts in-flight request when clearChat is called', async () => {
     const { createChatAgentStore } = await import('../src/processes/chat-agent/model/store');
     getBalanceMock.mockResolvedValue(100);
@@ -122,6 +184,44 @@ describe('chat agent store', () => {
     expect(mainPayloadText).toContain('mcp_github_enabled = true');
     expect(memoryPayloadText).not.toContain('# MCP GitHub Serve Mode');
     expect(longTermPayloadText).not.toContain('# MCP GitHub Serve Mode');
+  });
+
+  it('does not inject MCP/Organizer/Pipeline system prompts when MCP is disabled', async () => {
+    const { createChatAgentStore } = await import('../src/processes/chat-agent/model/store');
+    getBalanceMock.mockResolvedValueOnce(100).mockResolvedValueOnce(99);
+
+    localStorage.setItem(
+      'mcp_github_settings_v1',
+      JSON.stringify({
+        enabled: false,
+        baseUrl: 'http://localhost:3001/mcp',
+      }),
+    );
+
+    createChatCompletionMock
+      .mockResolvedValueOnce({
+        choices: [{ message: { content: '{"goal":"g","tasks":[],"current_focus":"f","constraints":[],"updated_at":"2026-03-11T00:00:00.000Z"}' } }],
+        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+      })
+      .mockResolvedValueOnce({
+        choices: [{ message: { content: '{"items":[]}' } }],
+        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+      })
+      .mockResolvedValueOnce({
+        choices: [{ message: { content: 'ok' } }],
+        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+      });
+
+    const store = createChatAgentStore();
+    store.getState().setInputValue('обычный запрос');
+    await store.getState().sendUserMessage();
+
+    const mainPayload = createChatCompletionMock.mock.calls[2]?.[0] as { messages: Array<{ content: string }> };
+    const mainPayloadText = mainPayload.messages.map((message) => message.content).join('\n');
+
+    expect(mainPayloadText).not.toContain('# MCP GitHub Serve Mode');
+    expect(mainPayloadText).not.toContain('# Organizer Scheduler Mode');
+    expect(mainPayloadText).not.toContain('# MCP Pipeline GitHub Issues Mode');
   });
 
   it('uses selected chat model in LLM requests and derived state', async () => {

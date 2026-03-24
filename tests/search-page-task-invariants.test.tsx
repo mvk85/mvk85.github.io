@@ -60,6 +60,7 @@ function createUseChatResult(taskId: 'none' | 'frontend_app_prompt', invariantsE
     setInputValue: vi.fn(),
     switchToHistoryChat: vi.fn(),
     totalCost: 0,
+    shouldShowCost: true,
     userMessageCount: 0,
     workingMemory: null,
   };
