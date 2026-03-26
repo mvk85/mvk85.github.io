@@ -23,6 +23,7 @@ import { createFrontendPromptInitialTaskState, isTaskEnabled } from '@/entities/
 import { runFrontendPromptTaskTurn } from '@/entities/chat/lib/taskWorkflow';
 import { deleteWorkingMemoryForChat, loadWorkingMemoryByChat, saveWorkingMemoryByChat } from '@/entities/chat/lib/workingMemoryStorage';
 import type {
+  ChatCompletionPayload,
   ChatContextStrategy,
   ChatMessage,
   ChatMessageRagModeComparison,
@@ -60,7 +61,6 @@ import type { ScheduledEvent } from '@/processes/chat-agent/model/schedulerTypes
 import { HttpError } from '@/shared/api/client';
 import { llmApi } from '@/shared/api/llmApi';
 import { ragApi, type RagModeComparison, type RagRetrieveMatch } from '@/shared/api/ragApi';
-import { env } from '@/shared/config/env';
 import { CHAT_MODEL_OPTIONS, type ChatModel } from '@/shared/config/llmModels';
 import { normalizeError } from '@/shared/lib/errors';
 import { loadChatAgentSettings } from '@/processes/chat-agent/lib/chatAgentSettings';
@@ -72,7 +72,6 @@ type ChatAgentActions = {
   createBranchFromCurrentChat: () => boolean;
   setCurrentChatStrategy: (contextStrategy: ChatContextStrategy) => boolean;
   setCurrentChatProfile: (profileId: UserProfileId) => boolean;
-  setCurrentChatModel: (model: ChatModel) => boolean;
   setCurrentChatTask: (taskId: ChatTaskId) => boolean;
   setCurrentTaskInvariantsEnabled: (enabled: boolean) => boolean;
   setStrategy1WindowSize: (windowSize: number) => boolean;
@@ -214,6 +213,28 @@ function isMemoryEnabled(): boolean {
   return loadChatAgentSettings().memoryEnabled;
 }
 
+function resolveChatModel(): ChatModel {
+  const selectedModel = loadChatAgentSettings().model;
+  if (CHAT_MODEL_OPTIONS.includes(selectedModel)) {
+    return selectedModel;
+  }
+
+  return CHAT_MODEL_OPTIONS[0];
+}
+
+function resolveLlmPayloadParams(): Pick<ChatCompletionPayload, 'temperature' | 'num_predict' | 'num_ctx'> {
+  const settings = loadChatAgentSettings();
+  if (!settings.model.startsWith('qwen2.5:')) {
+    return {};
+  }
+
+  return {
+    ...(settings.temperatureEnabled ? { temperature: settings.temperature } : {}),
+    ...(settings.numPredictEnabled ? { num_predict: settings.numPredict } : {}),
+    ...(settings.numCtxEnabled ? { num_ctx: settings.numCtx } : {}),
+  };
+}
+
 function extractAssistantText(response: { choices?: Array<{ message?: { content?: string | null } }> }): string {
   const text = response.choices?.[0]?.message?.content?.trim();
   if (!text) {
@@ -326,19 +347,6 @@ function isAbortError(error: unknown): boolean {
   }
 
   return false;
-}
-
-function resolveChatModel(statsState: ChatStatsState, chatId: string): ChatModel {
-  const currentModel = getChatStats(statsState, chatId).model;
-  if (currentModel && CHAT_MODEL_OPTIONS.includes(currentModel as ChatModel)) {
-    return currentModel as ChatModel;
-  }
-
-  if (CHAT_MODEL_OPTIONS.includes(env.llmModelMain as ChatModel)) {
-    return env.llmModelMain as ChatModel;
-  }
-
-  return CHAT_MODEL_OPTIONS[0];
 }
 
 function createScheduledEventId(): string {
@@ -672,13 +680,14 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
     };
 
     const runScheduledEvent = async (event: ScheduledEvent) => {
-      const selectedModel = resolveChatModel(get().statsState, get().currentChat.id);
+      const selectedModel = resolveChatModel();
+      const llmPayloadParams = resolveLlmPayloadParams();
       const signal = new AbortController().signal;
       const contextWithProfile = prependUserProfileToContext([{ role: 'user', content: event.action }], get().currentChat.profileId);
       const contextWithMcpPipeline = prependMcpPipelineGithubIssuesToContext(contextWithProfile, loadMcpGithubEnabled());
       const contextWithMcpGithub = prependMcpGithubToContext(contextWithMcpPipeline, loadMcpGithubEnabled());
       const contextWithOrganizer = prependOrganizerSchedulerToContext(contextWithMcpGithub, loadMcpGithubEnabled());
-      const payload = buildChatCompletionPayload(contextWithOrganizer, selectedModel);
+      const payload = buildChatCompletionPayload(contextWithOrganizer, selectedModel, llmPayloadParams);
 
       try {
         const response = await llmApi.createChatCompletion(payload, { signal });
@@ -834,7 +843,8 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
       sendUserMessage: async () => {
         const snapshot = get();
         const normalizedInput = snapshot.inputValue.trim();
-        const selectedModel = resolveChatModel(snapshot.statsState, snapshot.currentChat.id);
+        const selectedModel = resolveChatModel();
+        const llmPayloadParams = resolveLlmPayloadParams();
         const userMessageCount = countUserMessages(snapshot.currentChat.messages);
         const isLimitReached = userMessageCount >= USER_MESSAGE_LIMIT;
         if (!normalizedInput || snapshot.status === 'loading' || isLimitReached) {
@@ -1176,7 +1186,7 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
               taskState: chatForRequest.taskState,
               userInput: userMessage.content,
               llmCall: async (taskMessages) => {
-                const payload = buildChatCompletionPayload(taskMessages, selectedModel);
+                const payload = buildChatCompletionPayload(taskMessages, selectedModel, llmPayloadParams);
                 const response = await llmApi.createChatCompletion(payload, { signal });
                 return {
                   text: extractAssistantText(response),
@@ -1285,6 +1295,7 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
                 },
               ],
               selectedModel,
+              llmPayloadParams,
             );
             const factResponse = await llmApi.createChatCompletion(factPayload, { signal });
             if (!isRequestActive()) {
@@ -1316,6 +1327,7 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
               const workingMemoryPayload = buildChatCompletionPayload(
                 buildWorkingMemoryExtractionMessages(chatForRequest.messages, nextWorkingMemory),
                 selectedModel,
+                llmPayloadParams,
               );
               const workingMemoryResponse = await llmApi.createChatCompletion(workingMemoryPayload, { signal });
               if (!isRequestActive()) {
@@ -1341,6 +1353,7 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
               const longTermPayload = buildChatCompletionPayload(
                 buildLongTermMemoryExtractionMessages(chatForRequest.messages, nextLongTermMemory),
                 selectedModel,
+                llmPayloadParams,
               );
               const longTermResponse = await llmApi.createChatCompletion(longTermPayload, { signal });
               if (!isRequestActive()) {
@@ -1376,7 +1389,7 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
           const contextWithMcpPipeline = prependMcpPipelineGithubIssuesToContext(contextWithRag, loadMcpGithubEnabled());
           const contextWithMcpGithub = prependMcpGithubToContext(contextWithMcpPipeline, loadMcpGithubEnabled());
           const contextWithOrganizer = prependOrganizerSchedulerToContext(contextWithMcpGithub, loadMcpGithubEnabled());
-          const payload = buildChatCompletionPayload(contextWithOrganizer, selectedModel);
+          const payload = buildChatCompletionPayload(contextWithOrganizer, selectedModel, llmPayloadParams);
           const response = await llmApi.createChatCompletion(payload, { signal });
           if (!isRequestActive()) {
             return;
@@ -1566,31 +1579,6 @@ export function createChatAgentStore(): StoreApi<ChatAgentStoreState> {
           profileId,
         };
         persistSessions(nextCurrentChat, currentState.chatHistory);
-        return true;
-      },
-
-      setCurrentChatModel: (model) => {
-        const currentState = get();
-        if (currentState.status === 'loading') {
-          return false;
-        }
-        if (resolveChatModel(currentState.statsState, currentState.currentChat.id) === model) {
-          return true;
-        }
-
-        const currentChatStats = getChatStats(currentState.statsState, currentState.currentChat.id);
-        const nextStatsState: ChatStatsState = {
-          ...currentState.statsState,
-          byChat: {
-            ...currentState.statsState.byChat,
-            [currentState.currentChat.id]: {
-              ...currentChatStats,
-              model,
-            },
-          },
-        };
-        saveChatStats(nextStatsState);
-        set({ statsState: nextStatsState });
         return true;
       },
 
@@ -1830,7 +1818,7 @@ export function getChatAgentDerived(state: ChatAgentStoreState) {
     currentChatId: state.currentChat.id,
     scheduledEvents: state.scheduledEvents,
     messages,
-    model: resolveChatModel(state.statsState, state.currentChat.id),
+    model: resolveChatModel(),
     promptTokens: currentChatStats.promptTokens,
     completionTokens: currentChatStats.completionTokens,
     totalTokens: currentChatStats.totalTokens,

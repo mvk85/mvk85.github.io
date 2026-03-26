@@ -13,6 +13,12 @@ type OllamaGenerateResponse = {
   eval_count?: unknown;
 };
 
+type OllamaGenerateOptions = {
+  temperature?: number;
+  num_predict?: number;
+  num_ctx?: number;
+};
+
 const OLLAMA_MODEL_PREFIX = 'qwen2.5:';
 
 function isOllamaModel(model: string): boolean {
@@ -86,6 +92,21 @@ function mapOllamaGenerateResponse(response: OllamaGenerateResponse, requestedMo
   };
 }
 
+function buildOllamaOptions(body: ChatCompletionPayload): OllamaGenerateOptions | undefined {
+  const options: OllamaGenerateOptions = {};
+  if (body.temperature !== undefined) {
+    options.temperature = body.temperature;
+  }
+  if (body.num_predict !== undefined) {
+    options.num_predict = body.num_predict;
+  }
+  if (body.num_ctx !== undefined) {
+    options.num_ctx = body.num_ctx;
+  }
+
+  return Object.keys(options).length > 0 ? options : undefined;
+}
+
 export const llmApi = {
   createChatCompletion: async (body: ChatCompletionPayload, options?: { signal?: AbortSignal }): Promise<ChatCompletionResponse> => {
     if (!isOllamaModel(body.model)) {
@@ -96,12 +117,14 @@ export const llmApi = {
       throw new Error('Не задан VITE_OLLAMA_API_URL в .env');
     }
 
+    const ollamaOptions = buildOllamaOptions(body);
     const ollamaResponse = await postJson<OllamaGenerateResponse>(
       env.ollamaApiUrl,
       {
         model: body.model,
         prompt: buildOllamaPrompt(body.messages),
         stream: false,
+        ...(ollamaOptions ? { options: ollamaOptions } : {}),
       },
       {},
       options,

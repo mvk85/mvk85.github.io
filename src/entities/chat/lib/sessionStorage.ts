@@ -22,8 +22,8 @@ import type {
 import { DEFAULT_USER_PROFILE_ID, isValidUserProfileId } from '@/entities/profile/lib/profileConfig';
 import type { UserProfileId } from '@/entities/profile/model/types';
 
-const DEFAULT_STRATEGY_1_WINDOW_SIZE = 10;
-const DEFAULT_STRATEGY_2_WINDOW_SIZE = 10;
+const DEFAULT_STRATEGY_1_WINDOW_SIZE = 20;
+const DEFAULT_STRATEGY_2_WINDOW_SIZE = 20;
 
 type StoredChatSession = {
   id?: unknown;

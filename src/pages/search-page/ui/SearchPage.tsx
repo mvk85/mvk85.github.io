@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ChangeEvent, type FormEvent, type Key
 import CloseIcon from '@mui/icons-material/Close';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import HelpOutlineIcon from '@mui/icons-material/HelpOutline';
 import MoreHorizIcon from '@mui/icons-material/MoreHoriz';
 import {
   Accordion,
@@ -23,6 +24,7 @@ import {
   RadioGroup,
   Select,
   type SelectChangeEvent,
+  Tooltip,
   Table,
   TableBody,
   TableCell,
@@ -59,7 +61,7 @@ import {
 import { ragApi, type RagHealthResponse, type RagIndexListItem } from '@/shared/api/ragApi';
 import { env } from '@/shared/config/env';
 import { normalizeError } from '@/shared/lib/errors';
-import { loadChatAgentSettings, saveChatAgentSettings } from '@/processes/chat-agent/lib/chatAgentSettings';
+import { loadChatAgentSettings, saveChatAgentSettings, type ChatAgentSettings } from '@/processes/chat-agent/lib/chatAgentSettings';
 
 function formatRubles(value: number): string {
   return `${value.toFixed(6).replace('.', ',')} ₽`;
@@ -171,10 +173,17 @@ export function SearchPage() {
   const [historyMenuChatId, setHistoryMenuChatId] = useState<string | null>(null);
   const [isMemoryDrawerOpen, setIsMemoryDrawerOpen] = useState(false);
   const [activeMemoryTab, setActiveMemoryTab] = useState<MemoryTab>('short-term');
+  const [agentModel, setAgentModel] = useState<ChatModel>(initialChatAgentSettings.model);
   const [memoryEnabled, setMemoryEnabled] = useState(initialChatAgentSettings.memoryEnabled);
   const [isAgentSettingsDrawerOpen, setIsAgentSettingsDrawerOpen] = useState(false);
   const [activeAgentSettingsTab, setActiveAgentSettingsTab] = useState<AgentSettingsTab>('llm');
   const [requestBalanceEnabled, setRequestBalanceEnabled] = useState(initialChatAgentSettings.requestBalance);
+  const [temperatureEnabled, setTemperatureEnabled] = useState(initialChatAgentSettings.temperatureEnabled);
+  const [temperatureInput, setTemperatureInput] = useState(String(initialChatAgentSettings.temperature));
+  const [numPredictEnabled, setNumPredictEnabled] = useState(initialChatAgentSettings.numPredictEnabled);
+  const [numPredictInput, setNumPredictInput] = useState(String(initialChatAgentSettings.numPredict));
+  const [numCtxEnabled, setNumCtxEnabled] = useState(initialChatAgentSettings.numCtxEnabled);
+  const [numCtxInput, setNumCtxInput] = useState(String(initialChatAgentSettings.numCtx));
   const [isRagEnabled, setIsRagEnabled] = useState(initialRagSettings.enabled);
   const [ragBaseUrl, setRagBaseUrl] = useState(initialRagSettings.baseUrl || env.ragApiBaseUrl);
   const [ragCheckStatus, setRagCheckStatus] = useState<RagConnectionStatus>('idle');
@@ -224,7 +233,6 @@ export function SearchPage() {
     showThinkingLoader,
     limitNotice,
     messages,
-    model,
     promptTokens,
     completionTokens,
     clearLongTermMemory,
@@ -236,7 +244,6 @@ export function SearchPage() {
     scheduledEvents,
     setCurrentChatStrategy,
     setCurrentChatProfile,
-    setCurrentChatModel,
     setCurrentChatTask,
     setCurrentTaskInvariantsEnabled,
     setStrategy1WindowSize,
@@ -253,6 +260,23 @@ export function SearchPage() {
   const endOfMessagesRef = useRef<HTMLDivElement | null>(null);
   const ragFileInputRef = useRef<HTMLInputElement | null>(null);
   const chatPaneHeight = { xs: '50vh', sm: '58vh', md: '62vh' };
+  const isOllamaModelSelected = agentModel.startsWith('qwen2.5:');
+
+  const buildAgentSettingsPayload = (overrides: Partial<ChatAgentSettings> = {}): ChatAgentSettings => ({
+    model: overrides.model ?? agentModel,
+    requestBalance: overrides.requestBalance ?? requestBalanceEnabled,
+    memoryEnabled: overrides.memoryEnabled ?? memoryEnabled,
+    temperatureEnabled: overrides.temperatureEnabled ?? temperatureEnabled,
+    temperature: overrides.temperature ?? Number(temperatureInput),
+    numPredictEnabled: overrides.numPredictEnabled ?? numPredictEnabled,
+    numPredict: overrides.numPredict ?? Number(numPredictInput),
+    numCtxEnabled: overrides.numCtxEnabled ?? numCtxEnabled,
+    numCtx: overrides.numCtx ?? Number(numCtxInput),
+  });
+
+  const persistAgentSettings = (overrides: Partial<ChatAgentSettings> = {}) => {
+    saveChatAgentSettings(buildAgentSettingsPayload(overrides));
+  };
 
   useEffect(() => {
     endOfMessagesRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -270,13 +294,6 @@ export function SearchPage() {
       username: mcpGithubUsername,
     });
   }, [isMcpGithubEnabled, mcpGithubBaseUrl, mcpGithubUsername]);
-
-  useEffect(() => {
-    saveChatAgentSettings({
-      requestBalance: requestBalanceEnabled,
-      memoryEnabled,
-    });
-  }, [requestBalanceEnabled, memoryEnabled]);
 
   useEffect(() => {
     saveRagSettings({
@@ -345,8 +362,101 @@ export function SearchPage() {
     setCurrentChatTask(event.target.value as typeof currentChatTask);
   };
 
-  const handleModelChange = (event: SelectChangeEvent) => {
-    setCurrentChatModel(event.target.value as ChatModel);
+  const handleAgentModelChange = (event: SelectChangeEvent) => {
+    const nextModel = event.target.value as ChatModel;
+    setAgentModel(nextModel);
+    persistAgentSettings({ model: nextModel });
+  };
+
+  const handleRequestBalanceToggle = (enabled: boolean) => {
+    setRequestBalanceEnabled(enabled);
+    persistAgentSettings({ requestBalance: enabled });
+  };
+
+  const handleMemoryToggle = (enabled: boolean) => {
+    setMemoryEnabled(enabled);
+    persistAgentSettings({ memoryEnabled: enabled });
+  };
+
+  const handleTemperatureToggle = (enabled: boolean) => {
+    setTemperatureEnabled(enabled);
+    persistAgentSettings({ temperatureEnabled: enabled });
+  };
+
+  const handleNumPredictToggle = (enabled: boolean) => {
+    setNumPredictEnabled(enabled);
+    persistAgentSettings({ numPredictEnabled: enabled });
+  };
+
+  const handleNumCtxToggle = (enabled: boolean) => {
+    setNumCtxEnabled(enabled);
+    persistAgentSettings({ numCtxEnabled: enabled });
+  };
+
+  const handleTemperatureInputChange = (nextValue: string) => {
+    setTemperatureInput(nextValue);
+    const parsed = Number(nextValue);
+    if (Number.isFinite(parsed) && parsed >= 0) {
+      persistAgentSettings({ temperature: parsed });
+    }
+  };
+
+  const handleTemperatureBlur = () => {
+    const parsed = Number(temperatureInput);
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      const fallback = loadChatAgentSettings().temperature;
+      setTemperatureInput(String(fallback));
+      persistAgentSettings({ temperature: fallback });
+      return;
+    }
+    setTemperatureInput(String(parsed));
+    persistAgentSettings({ temperature: parsed });
+  };
+
+  const handleNumPredictInputChange = (nextValue: string) => {
+    if (nextValue !== '' && !/^\d+$/.test(nextValue)) {
+      return;
+    }
+    setNumPredictInput(nextValue);
+    const parsed = Number(nextValue);
+    if (Number.isInteger(parsed) && parsed > 0) {
+      persistAgentSettings({ numPredict: parsed });
+    }
+  };
+
+  const handleNumPredictBlur = () => {
+    const parsed = Number(numPredictInput);
+    if (!Number.isInteger(parsed) || parsed <= 0) {
+      const fallback = loadChatAgentSettings().numPredict;
+      setNumPredictInput(String(fallback));
+      persistAgentSettings({ numPredict: fallback });
+      return;
+    }
+    setNumPredictInput(String(parsed));
+    persistAgentSettings({ numPredict: parsed });
+  };
+
+  const handleNumCtxInputChange = (nextValue: string) => {
+    if (nextValue !== '' && !/^\d+$/.test(nextValue)) {
+      return;
+    }
+    setNumCtxInput(nextValue);
+    const parsed = Number(nextValue);
+    if (Number.isInteger(parsed) && parsed > 0) {
+      persistAgentSettings({ numCtx: parsed });
+    }
+  };
+
+  const handleNumCtxBlur = () => {
+    const parsed = Number(numCtxInput);
+    if (!Number.isInteger(parsed) || parsed <= 0) {
+      const fallback = loadChatAgentSettings().numCtx;
+      setNumCtxInput(String(fallback));
+      persistAgentSettings({ numCtx: fallback });
+      return;
+    }
+    setNumCtxInput(String(parsed));
+    persistAgentSettings({ numCtx: parsed });
   };
 
   const taskInvariants = getTaskInvariants(currentChatTask);
@@ -766,21 +876,6 @@ export function SearchPage() {
               </FormControl>
               <FormControl>
                 <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 0.5 }}>
-                  Модель
-                </Typography>
-                <FormControl size="small" disabled={isLoading}>
-                  <InputLabel id="chat-model-select-label">LLM модель</InputLabel>
-                  <Select labelId="chat-model-select-label" label="LLM модель" value={model} onChange={handleModelChange}>
-                    {CHAT_MODEL_OPTIONS.map((modelOption) => (
-                      <MenuItem key={modelOption} value={modelOption}>
-                        {modelOption}
-                      </MenuItem>
-                    ))}
-                  </Select>
-                </FormControl>
-              </FormControl>
-              <FormControl>
-                <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 0.5 }}>
                   Стратегии
                 </Typography>
                 <RadioGroup
@@ -1048,7 +1143,7 @@ export function SearchPage() {
                   <Typography variant="body2">Токены ответа: {completionTokens}</Typography>
                   <Typography variant="body2">Токены всего: {totalTokens}</Typography>
                   {shouldShowCost ? <Typography variant="body2">Общая стоимость: {formatRubles(totalCost)}</Typography> : null}
-                  <Typography variant="body2">Модель (текущий чат): {model}</Typography>
+                  <Typography variant="body2">Модель (агент): {agentModel}</Typography>
                 </Stack>
               </Stack>
             </Paper>
@@ -1330,7 +1425,7 @@ export function SearchPage() {
           <Box sx={{ flexGrow: 1, overflowY: 'auto', p: 2 }}>
             <FormControlLabel
               sx={{ mb: 2 }}
-              control={<Switch checked={memoryEnabled} onChange={(event) => setMemoryEnabled(event.target.checked)} />}
+              control={<Switch checked={memoryEnabled} onChange={(event) => handleMemoryToggle(event.target.checked)} />}
               label="Включить память"
             />
 
@@ -1465,10 +1560,90 @@ export function SearchPage() {
                 <Typography variant="subtitle1" fontWeight={700}>
                   LLM
                 </Typography>
+                <FormControl size="small">
+                  <InputLabel id="agent-model-select-label">LLM модель</InputLabel>
+                  <Select labelId="agent-model-select-label" label="LLM модель" value={agentModel} onChange={handleAgentModelChange}>
+                    {CHAT_MODEL_OPTIONS.map((modelOption) => (
+                      <MenuItem key={modelOption} value={modelOption}>
+                        {modelOption}
+                      </MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
                 <FormControlLabel
-                  control={<Switch checked={requestBalanceEnabled} onChange={(event) => setRequestBalanceEnabled(event.target.checked)} />}
+                  control={<Switch checked={requestBalanceEnabled} onChange={(event) => handleRequestBalanceToggle(event.target.checked)} />}
                   label="Запрашивать баланс"
                 />
+                {isOllamaModelSelected ? (
+                  <Stack spacing={1}>
+                    <Stack direction="row" spacing={1} alignItems="center">
+                      <FormControlLabel
+                        control={<Checkbox checked={temperatureEnabled} onChange={(event) => handleTemperatureToggle(event.target.checked)} />}
+                        label="Temperature"
+                      />
+                      <Tooltip title="Управляет случайностью генерации: ниже — стабильнее, выше — креативнее.">
+                        <IconButton size="small" aria-label="Что такое temperature">
+                          <HelpOutlineIcon fontSize="small" />
+                        </IconButton>
+                      </Tooltip>
+                    </Stack>
+                    {temperatureEnabled ? (
+                      <TextField
+                        size="small"
+                        label="temperature"
+                        value={temperatureInput}
+                        onChange={(event) => handleTemperatureInputChange(event.target.value)}
+                        onBlur={handleTemperatureBlur}
+                        type="number"
+                        inputProps={{ min: 0, step: '0.1' }}
+                      />
+                    ) : null}
+
+                    <Stack direction="row" spacing={1} alignItems="center">
+                      <FormControlLabel
+                        control={<Checkbox checked={numPredictEnabled} onChange={(event) => handleNumPredictToggle(event.target.checked)} />}
+                        label="Max tokens (num_predict)"
+                      />
+                      <Tooltip title="Лимит токенов ответа. Меньше — короче ответ, больше — длиннее.">
+                        <IconButton size="small" aria-label="Что такое num_predict">
+                          <HelpOutlineIcon fontSize="small" />
+                        </IconButton>
+                      </Tooltip>
+                    </Stack>
+                    {numPredictEnabled ? (
+                      <TextField
+                        size="small"
+                        label="num_predict"
+                        value={numPredictInput}
+                        onChange={(event) => handleNumPredictInputChange(event.target.value)}
+                        onBlur={handleNumPredictBlur}
+                        inputProps={{ inputMode: 'numeric', min: 1 }}
+                      />
+                    ) : null}
+
+                    <Stack direction="row" spacing={1} alignItems="center">
+                      <FormControlLabel
+                        control={<Checkbox checked={numCtxEnabled} onChange={(event) => handleNumCtxToggle(event.target.checked)} />}
+                        label="Context window (num_ctx)"
+                      />
+                      <Tooltip title="Максимальный размер контекста, который модель учитывает в одном запросе.">
+                        <IconButton size="small" aria-label="Что такое num_ctx">
+                          <HelpOutlineIcon fontSize="small" />
+                        </IconButton>
+                      </Tooltip>
+                    </Stack>
+                    {numCtxEnabled ? (
+                      <TextField
+                        size="small"
+                        label="num_ctx"
+                        value={numCtxInput}
+                        onChange={(event) => handleNumCtxInputChange(event.target.value)}
+                        onBlur={handleNumCtxBlur}
+                        inputProps={{ inputMode: 'numeric', min: 1 }}
+                      />
+                    ) : null}
+                  </Stack>
+                ) : null}
               </Stack>
             ) : null}
 

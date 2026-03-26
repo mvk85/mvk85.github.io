@@ -45,6 +45,9 @@ export type LlmMessage = {
 export type ChatCompletionPayload = {
   model: string;
   messages: LlmMessage[];
+  temperature?: number;
+  num_predict?: number;
+  num_ctx?: number;
 };
 
 export type ChatSummaryState = {

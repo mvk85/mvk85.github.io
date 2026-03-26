@@ -35,7 +35,6 @@ export function useChatAgent() {
     ragWarningMessage: derived.ragWarningMessage,
     sendUserMessage: state.sendUserMessage,
     setCurrentChatProfile: state.setCurrentChatProfile,
-    setCurrentChatModel: state.setCurrentChatModel,
     setCurrentChatStrategy: state.setCurrentChatStrategy,
     setCurrentChatTask: state.setCurrentChatTask,
     setCurrentTaskInvariantsEnabled: state.setCurrentTaskInvariantsEnabled,

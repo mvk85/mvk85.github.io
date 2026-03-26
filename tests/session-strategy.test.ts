@@ -39,7 +39,7 @@ beforeEach(() => {
 });
 
 describe('chat strategy storage', () => {
-  it('по умолчанию новый чат создается с strategy-1 и window=10', () => {
+  it('по умолчанию новый чат создается с strategy-1 и window=20', () => {
     const chat = createEmptyChatSession();
 
     expect(chat.profileId).toBe('none');
@@ -47,8 +47,8 @@ describe('chat strategy storage', () => {
     expect(chat.taskState).toBeNull();
     expect(chat.contextStrategy).toBe('strategy-1');
     expect(chat.parentChatId).toBeNull();
-    expect(chat.strategySettings.strategy1WindowSize).toBe(10);
-    expect(chat.strategySettings.strategy2WindowSize).toBe(10);
+    expect(chat.strategySettings.strategy1WindowSize).toBe(20);
+    expect(chat.strategySettings.strategy2WindowSize).toBe(20);
     expect(chat.strategySettings.strategy2Facts).toEqual({});
   });
 
@@ -60,8 +60,8 @@ describe('chat strategy storage', () => {
     expect(chat.taskState).toBeNull();
     expect(chat.contextStrategy).toBe('strategy-3');
     expect(chat.parentChatId).toBeNull();
-    expect(chat.strategySettings.strategy1WindowSize).toBe(10);
-    expect(chat.strategySettings.strategy2WindowSize).toBe(10);
+    expect(chat.strategySettings.strategy1WindowSize).toBe(20);
+    expect(chat.strategySettings.strategy2WindowSize).toBe(20);
     expect(chat.strategySettings.strategy2Facts).toEqual({});
   });
 
@@ -102,8 +102,8 @@ describe('chat strategy storage', () => {
     expect(state?.currentChat.taskId).toBe('none');
     expect(state?.currentChat.taskState).toBeNull();
     expect(state?.currentChat.parentChatId).toBeNull();
-    expect(state?.currentChat.strategySettings.strategy1WindowSize).toBe(10);
-    expect(state?.currentChat.strategySettings.strategy2WindowSize).toBe(10);
+    expect(state?.currentChat.strategySettings.strategy1WindowSize).toBe(20);
+    expect(state?.currentChat.strategySettings.strategy2WindowSize).toBe(20);
     expect(state?.currentChat.strategySettings.strategy2Facts).toEqual({});
     expect(state?.chatHistory).toHaveLength(1);
     expect(state?.chatHistory[0].id).toBe('chat-3');

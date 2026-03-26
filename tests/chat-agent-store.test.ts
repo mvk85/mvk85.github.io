@@ -224,9 +224,17 @@ describe('chat agent store', () => {
     expect(mainPayloadText).not.toContain('# MCP Pipeline GitHub Issues Mode');
   });
 
-  it('uses selected chat model in LLM requests and derived state', async () => {
+  it('uses model from agent settings in LLM requests and derived state', async () => {
     const { createChatAgentStore, getChatAgentDerived } = await import('../src/processes/chat-agent/model/store');
     getBalanceMock.mockResolvedValueOnce(100).mockResolvedValueOnce(99);
+    localStorage.setItem(
+      'chat_agent_settings_v1',
+      JSON.stringify({
+        requestBalance: true,
+        memoryEnabled: true,
+        model: 'gpt-5-mini',
+      }),
+    );
 
     createChatCompletionMock
       .mockResolvedValueOnce({
@@ -243,9 +251,6 @@ describe('chat agent store', () => {
       });
 
     const store = createChatAgentStore();
-    expect(getChatAgentDerived(store.getState()).model).toBe('gpt-5.1');
-
-    store.getState().setCurrentChatModel('gpt-5-mini');
     expect(getChatAgentDerived(store.getState()).model).toBe('gpt-5-mini');
 
     store.getState().setInputValue('проверь модель');

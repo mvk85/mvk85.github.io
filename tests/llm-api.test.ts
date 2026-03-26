@@ -44,6 +44,9 @@ describe('llmApi', () => {
     const response = await llmApi.createChatCompletion({
       model: 'qwen2.5:0.5b',
       messages: [{ role: 'user', content: 'Привет!' }],
+      temperature: 0.4,
+      num_predict: 128,
+      num_ctx: 2048,
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -55,6 +58,9 @@ describe('llmApi', () => {
     });
     expect(init.headers).not.toHaveProperty('Authorization');
     expect(String(init.body)).toContain('"stream":false');
+    expect(String(init.body)).toContain('"temperature":0.4');
+    expect(String(init.body)).toContain('"num_predict":128');
+    expect(String(init.body)).toContain('"num_ctx":2048');
 
     expect(response.model).toBe('qwen2.5:0.5b');
     expect(response.choices[0]?.message.content).toBe('Hello! How can I assist you today?');
