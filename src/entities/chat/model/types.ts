@@ -45,6 +45,7 @@ export type LlmMessage = {
 export type ChatCompletionPayload = {
   model: string;
   messages: LlmMessage[];
+  ollamaApiUrl?: string;
   temperature?: number;
   num_predict?: number;
   num_ctx?: number;

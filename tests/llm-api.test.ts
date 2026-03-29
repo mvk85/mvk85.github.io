@@ -92,4 +92,33 @@ describe('llmApi', () => {
     expect(fetchMock).not.toHaveBeenCalled();
     expect(response.model).toBe('gpt-5.1');
   });
+
+  it('uses request ollamaApiUrl when provided', async () => {
+    const { llmApi } = await import('../src/shared/api/llmApi');
+
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      text: async () =>
+        JSON.stringify({
+          model: 'qwen2.5:3b',
+          created_at: '2026-03-29T12:00:00.000Z',
+          response: 'ok',
+          done: true,
+          done_reason: 'stop',
+          prompt_eval_count: 12,
+          eval_count: 8,
+        }),
+    });
+
+    await llmApi.createChatCompletion({
+      model: 'qwen2.5:3b',
+      ollamaApiUrl: 'http://89.169.44.252:11434/api/generate',
+      messages: [{ role: 'user', content: 'ping' }],
+    });
+
+    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('http://89.169.44.252:11434/api/generate');
+  });
 });

@@ -113,13 +113,14 @@ export const llmApi = {
       return openAiProxyChatApi.createChatCompletion(body, options);
     }
 
-    if (!env.ollamaApiUrl) {
+    const ollamaApiUrl = body.ollamaApiUrl?.trim() || env.ollamaApiUrl;
+    if (!ollamaApiUrl) {
       throw new Error('Не задан VITE_OLLAMA_API_URL в .env');
     }
 
     const ollamaOptions = buildOllamaOptions(body);
     const ollamaResponse = await postJson<OllamaGenerateResponse>(
-      env.ollamaApiUrl,
+      ollamaApiUrl,
       {
         model: body.model,
         prompt: buildOllamaPrompt(body.messages),

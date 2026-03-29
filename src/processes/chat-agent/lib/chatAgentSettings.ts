@@ -5,6 +5,7 @@ export const CHAT_AGENT_SETTINGS_STORAGE_KEY = 'chat_agent_settings_v1';
 
 export type ChatAgentSettings = {
   model: ChatModel;
+  ollamaApiUrl: string;
   requestBalance: boolean;
   memoryEnabled: boolean;
   temperatureEnabled: boolean;
@@ -17,6 +18,7 @@ export type ChatAgentSettings = {
 
 type StoredChatAgentSettings = {
   model?: unknown;
+  ollamaApiUrl?: unknown;
   requestBalance?: unknown;
   memoryEnabled?: unknown;
   temperatureEnabled?: unknown;
@@ -30,6 +32,7 @@ type StoredChatAgentSettings = {
 const DEFAULT_TEMPERATURE = 0.7;
 const DEFAULT_NUM_PREDICT = 512;
 const DEFAULT_NUM_CTX = 4096;
+const DEFAULT_OLLAMA_API_URL = 'http://localhost:11434/api/generate';
 
 function resolveDefaultModel(): ChatModel {
   if (CHAT_MODEL_OPTIONS.includes(env.llmModelMain as ChatModel)) {
@@ -55,9 +58,19 @@ function normalizePositiveInteger(value: unknown, fallback: number): number {
   return value;
 }
 
+function normalizeOllamaApiUrl(value: unknown, fallback: string): string {
+  if (typeof value !== 'string') {
+    return fallback;
+  }
+
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : fallback;
+}
+
 function createDefaultSettings(): ChatAgentSettings {
   return {
     model: resolveDefaultModel(),
+    ollamaApiUrl: env.ollamaApiUrl?.trim() || DEFAULT_OLLAMA_API_URL,
     requestBalance: false,
     memoryEnabled: false,
     temperatureEnabled: false,
@@ -86,6 +99,7 @@ export function loadChatAgentSettings(): ChatAgentSettings {
 
     return {
       model,
+      ollamaApiUrl: normalizeOllamaApiUrl(parsed.ollamaApiUrl, defaults.ollamaApiUrl),
       requestBalance: parsed.requestBalance === true,
       memoryEnabled: parsed.memoryEnabled === true,
       temperatureEnabled: parsed.temperatureEnabled === true,
@@ -109,6 +123,7 @@ export function saveChatAgentSettings(settings: ChatAgentSettings): void {
     CHAT_AGENT_SETTINGS_STORAGE_KEY,
     JSON.stringify({
       model: settings.model,
+      ollamaApiUrl: settings.ollamaApiUrl,
       requestBalance: settings.requestBalance,
       memoryEnabled: settings.memoryEnabled,
       temperatureEnabled: settings.temperatureEnabled,

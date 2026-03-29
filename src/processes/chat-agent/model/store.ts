@@ -222,13 +222,14 @@ function resolveChatModel(): ChatModel {
   return CHAT_MODEL_OPTIONS[0];
 }
 
-function resolveLlmPayloadParams(): Pick<ChatCompletionPayload, 'temperature' | 'num_predict' | 'num_ctx'> {
+function resolveLlmPayloadParams(): Pick<ChatCompletionPayload, 'ollamaApiUrl' | 'temperature' | 'num_predict' | 'num_ctx'> {
   const settings = loadChatAgentSettings();
   if (!settings.model.startsWith('qwen2.5:')) {
     return {};
   }
 
   return {
+    ...(settings.ollamaApiUrl.trim().length > 0 ? { ollamaApiUrl: settings.ollamaApiUrl.trim() } : {}),
     ...(settings.temperatureEnabled ? { temperature: settings.temperature } : {}),
     ...(settings.numPredictEnabled ? { num_predict: settings.numPredict } : {}),
     ...(settings.numCtxEnabled ? { num_ctx: settings.numCtx } : {}),

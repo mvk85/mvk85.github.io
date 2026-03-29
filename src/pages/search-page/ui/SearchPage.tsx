@@ -126,6 +126,8 @@ type McpGithubHealthResponse = {
 };
 
 type RagConnectionStatus = 'idle' | 'checking' | 'success' | 'error';
+const DEFAULT_OLLAMA_API_URL = 'http://localhost:11434/api/generate';
+const REMOTE_OLLAMA_3B_API_URL = 'http://89.169.44.252:11434/api/generate';
 
 function isValidHttpUrl(value: string): boolean {
   try {
@@ -174,6 +176,7 @@ export function SearchPage() {
   const [isMemoryDrawerOpen, setIsMemoryDrawerOpen] = useState(false);
   const [activeMemoryTab, setActiveMemoryTab] = useState<MemoryTab>('short-term');
   const [agentModel, setAgentModel] = useState<ChatModel>(initialChatAgentSettings.model);
+  const [ollamaApiUrl, setOllamaApiUrl] = useState(initialChatAgentSettings.ollamaApiUrl || DEFAULT_OLLAMA_API_URL);
   const [memoryEnabled, setMemoryEnabled] = useState(initialChatAgentSettings.memoryEnabled);
   const [isAgentSettingsDrawerOpen, setIsAgentSettingsDrawerOpen] = useState(false);
   const [activeAgentSettingsTab, setActiveAgentSettingsTab] = useState<AgentSettingsTab>('llm');
@@ -264,6 +267,7 @@ export function SearchPage() {
 
   const buildAgentSettingsPayload = (overrides: Partial<ChatAgentSettings> = {}): ChatAgentSettings => ({
     model: overrides.model ?? agentModel,
+    ollamaApiUrl: overrides.ollamaApiUrl ?? ollamaApiUrl.trim(),
     requestBalance: overrides.requestBalance ?? requestBalanceEnabled,
     memoryEnabled: overrides.memoryEnabled ?? memoryEnabled,
     temperatureEnabled: overrides.temperatureEnabled ?? temperatureEnabled,
@@ -365,7 +369,30 @@ export function SearchPage() {
   const handleAgentModelChange = (event: SelectChangeEvent) => {
     const nextModel = event.target.value as ChatModel;
     setAgentModel(nextModel);
+    if (nextModel === 'qwen2.5:3b') {
+      setOllamaApiUrl(REMOTE_OLLAMA_3B_API_URL);
+      persistAgentSettings({ model: nextModel, ollamaApiUrl: REMOTE_OLLAMA_3B_API_URL });
+      return;
+    }
+
     persistAgentSettings({ model: nextModel });
+  };
+
+  const handleOllamaApiUrlChange = (nextValue: string) => {
+    setOllamaApiUrl(nextValue);
+  };
+
+  const handleOllamaApiUrlBlur = () => {
+    const normalized = ollamaApiUrl.trim();
+    if (!isValidHttpUrl(normalized)) {
+      const fallback = loadChatAgentSettings().ollamaApiUrl || DEFAULT_OLLAMA_API_URL;
+      setOllamaApiUrl(fallback);
+      persistAgentSettings({ ollamaApiUrl: fallback });
+      return;
+    }
+
+    setOllamaApiUrl(normalized);
+    persistAgentSettings({ ollamaApiUrl: normalized });
   };
 
   const handleRequestBalanceToggle = (enabled: boolean) => {
@@ -1576,6 +1603,16 @@ export function SearchPage() {
                 />
                 {isOllamaModelSelected ? (
                   <Stack spacing={1}>
+                    <TextField
+                      size="small"
+                      label="Ollama API URL"
+                      value={ollamaApiUrl}
+                      onChange={(event) => handleOllamaApiUrlChange(event.target.value)}
+                      onBlur={handleOllamaApiUrlBlur}
+                      type="url"
+                      error={!isValidHttpUrl(ollamaApiUrl.trim())}
+                      helperText={isValidHttpUrl(ollamaApiUrl.trim()) ? 'Пример: http://localhost:11434/api/generate' : 'Нужен корректный http(s) URL'}
+                    />
                     <Stack direction="row" spacing={1} alignItems="center">
                       <FormControlLabel
                         control={<Checkbox checked={temperatureEnabled} onChange={(event) => handleTemperatureToggle(event.target.checked)} />}
